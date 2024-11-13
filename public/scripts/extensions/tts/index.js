@@ -282,12 +282,12 @@ async function playAudioData(audioJob) {
     } else {
         throw `TTS received invalid audio data type ${typeof audioBlob}`;
     }
-    audioElement.addEventListener('ended', completeCurrentAudioJob);
-    audioElement.addEventListener('canplay', () => {
-        console.debug('Starting TTS playback');
-        audioElement.playbackRate = extension_settings.tts.playback_rate;
-        audioElement.play();
-    });
+        audioElement.addEventListener('ended', completeCurrentAudioJob);
+        audioElement.addEventListener('canplay', () => {
+            console.debug('Starting TTS playback');
+            audioElement.playbackRate = extension_settings.tts.playback_rate;
+            audioElement.play();
+        });
 }
 
 window['tts_preview'] = function (id) {
@@ -482,6 +482,9 @@ async function processTtsQueue() {
         const partJoiner = (ttsProvider?.separator || ' ... ');
         text = matches ? matches.join(partJoiner) : text;
     }
+
+    // Remove embedded images
+    text = text.replace(/!\[.*?]\([^)]*\)/g, ' ');
 
     if (typeof ttsProvider?.processText === 'function') {
         text = await ttsProvider.processText(text);
