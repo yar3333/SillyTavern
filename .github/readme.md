@@ -1,8 +1,10 @@
 <a name="readme-top"></a>
 
-Major differences of y=this fork compared to original SillyTavern:
+Major differences of this fork compared to original SillyTavern:
 
- * Editing translated messages (in native user's language)
+* Editing translated messages (in native user's language)
+
+---
 
 ![][cover]
 
