@@ -1,5 +1,9 @@
 <a name="readme-top"></a>
 
+Major differences of y=this fork compared to original SillyTavern:
+
+ * Editing translated messages (in native user's language)
+
 ![][cover]
 
 <div align="center">
