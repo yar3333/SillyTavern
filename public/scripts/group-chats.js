@@ -1,3 +1,5 @@
+import { Fuse } from '../lib.js';
+
 import {
     shuffle,
     onlyUnique,
@@ -108,6 +110,7 @@ let newGroupMembers = [];
 export const group_activation_strategy = {
     NATURAL: 0,
     LIST: 1,
+    MANUAL: 2,
 };
 
 export const group_generation_mode = {
@@ -850,6 +853,9 @@ async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
         else if (activationStrategy === group_activation_strategy.LIST) {
             activatedMembers = activateListOrder(enabledMembers);
         }
+        else if (activationStrategy === group_activation_strategy.MANUAL && !isUserInput) {
+            activatedMembers = shuffle(enabledMembers).slice(0, 1).map(x => characters.findIndex(y => y.avatar === x)).filter(x => x !== -1);
+        }
 
         if (activatedMembers.length === 0) {
             //toastr.warning('All group members are disabled. Enable at least one to get a reply.');
@@ -1259,18 +1265,20 @@ function getGroupCharacters({ doFilter, onlyMembers } = {}) {
     const thisGroup = openGroupId && groups.find((x) => x.id == openGroupId);
     let candidates = characters
         .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)
-        .map((x, index) => ({ item: x, id: index, type: 'character' }));
-
-    if (onlyMembers) {
-        candidates.sort(sortMembersFn);
-    } else {
-        sortEntitiesList(candidates);
-    }
+        .map((x) => ({ item: x, id: characters.indexOf(x), type: 'character' }));
 
     if (doFilter) {
         candidates = groupCandidatesFilter.applyFilters(candidates);
     }
 
+    if (onlyMembers) {
+        candidates.sort(sortMembersFn);
+    } else {
+        const useFilterOrder = doFilter && !!$('#rm_group_filter').val();
+        sortEntitiesList(candidates, useFilterOrder, groupCandidatesFilter);
+    }
+
+    groupCandidatesFilter.clearFuzzySearchCaches();
     return candidates;
 }
 
@@ -1857,32 +1865,38 @@ export async function deleteGroupChat(groupId, chatId) {
     }
 }
 
-export async function importGroupChat(formData) {
-    await jQuery.ajax({
-        type: 'POST',
-        url: '/api/chats/group/import',
-        data: formData,
-        beforeSend: function () {
-        },
-        cache: false,
-        contentType: false,
-        processData: false,
-        success: async function (data) {
-            if (data.res) {
-                const chatId = data.res;
-                const group = groups.find(x => x.id == selected_group);
-
-                if (group) {
-                    group.chats.push(chatId);
-                    await editGroup(selected_group, true, true);
-                    await displayPastChats();
-                }
-            }
-        },
-        error: function () {
-            $('#create_button').removeAttr('disabled');
-        },
+/**
+ * Imports a group chat from a file and adds it to the group.
+ * @param {FormData} formData Form data to send to the server
+ * @param {EventTarget} eventTarget Element that triggered the import
+ */
+export async function importGroupChat(formData, eventTarget) {
+    const headers = getRequestHeaders();
+    delete headers['Content-Type'];
+    const fetchResult = await fetch('/api/chats/group/import', {
+        method: 'POST',
+        headers: headers,
+        body: formData,
+        cache: 'no-cache',
     });
+
+    if (fetchResult.ok) {
+        const data = await fetchResult.json();
+        if (data.res) {
+            const chatId = data.res;
+            const group = groups.find(x => x.id == selected_group);
+
+            if (group) {
+                group.chats.push(chatId);
+                await editGroup(selected_group, true, true);
+                await displayPastChats();
+            }
+        }
+    }
+
+    if (eventTarget instanceof HTMLInputElement) {
+        eventTarget.value = '';
+    }
 }
 
 export async function saveGroupBookmarkChat(groupId, name, metadata, mesId) {

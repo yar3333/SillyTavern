@@ -416,15 +416,15 @@ async function translate(text, lang=null) {
 
         // split text by embedded images links
         const chunks = text.split(/!\[.*?]\([^)]*\)/);
-        const links = [ ...text.matchAll(/!\[.*?]\([^)]*\)/g) ];
+        const links = [...text.matchAll(/!\[.*?]\([^)]*\)/g)];
 
-        let r = "";
+        let result = '';
         for (let i = 0; i < chunks.length; i++) {
-            r += await translateInner(chunks[i], lang);
-            if (i < links.length) r += links[i][0];
+            result += await translateInner(chunks[i], lang);
+            if (i < links.length) result += links[i][0];
         }
 
-        return r;
+        return result;
     } catch (error) {
         console.log(error);
         toastr.error(String(error), 'Failed to translate message');
@@ -681,7 +681,7 @@ jQuery(async () => {
         const secretKey = extension_settings.translate.provider + '_url';
         const savedUrl = secret_state[secretKey] ? await findSecret(secretKey) : '';
 
-        const url = await callGenericPopup(popupText, POPUP_TYPE.INPUT, savedUrl,{
+        const url = await callGenericPopup(popupText, POPUP_TYPE.INPUT, savedUrl, {
             customButtons: [{
                 text: 'Remove URL',
                 appendAtEnd: true,

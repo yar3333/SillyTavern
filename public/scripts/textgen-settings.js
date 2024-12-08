@@ -18,13 +18,6 @@ import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer } 
 import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, getTextTokens, tokenizers } from './tokenizers.js';
 import { getSortableDelay, onlyUnique } from './utils.js';
 
-export {
-    settings as textgenerationwebui_settings,
-    loadTextGenSettings,
-    generateTextGenWithStreaming,
-    formatTextGenURL,
-};
-
 export const textgen_types = {
     OOBA: 'ooba',
     MANCER: 'mancer',
@@ -193,7 +186,12 @@ const settings = {
     openrouter_allow_fallbacks: true,
     xtc_threshold: 0.1,
     xtc_probability: 0,
+    nsigma: 0.0,
     featherless_model: '',
+};
+
+export {
+    settings as textgenerationwebui_settings,
 };
 
 export let textgenerationwebui_banned_in_macros = [];
@@ -265,6 +263,7 @@ export const setting_names = [
     'openrouter_allow_fallbacks',
     'xtc_threshold',
     'xtc_probability',
+    'nsigma',
 ];
 
 const DYNATEMP_BLOCK = document.getElementById('dynatemp_block_ooba');
@@ -325,7 +324,7 @@ async function selectPreset(name) {
     saveSettingsDebounced();
 }
 
-function formatTextGenURL(value) {
+export function formatTextGenURL(value) {
     try {
         const noFormatTypes = [MANCER, TOGETHERAI, INFERMATICAI, DREAMGEN, OPENROUTER];
         if (noFormatTypes.includes(settings.type)) {
@@ -463,7 +462,7 @@ function calculateLogitBias() {
     return result;
 }
 
-function loadTextGenSettings(data, loadedSettings) {
+export function loadTextGenSettings(data, loadedSettings) {
     textgenerationwebui_presets = convertPresets(data.textgenerationwebui_presets);
     textgenerationwebui_preset_names = data.textgenerationwebui_preset_names ?? [];
     Object.assign(settings, loadedSettings.textgenerationwebui_settings ?? {});
@@ -880,7 +879,14 @@ function setSettingByName(setting, value, trigger) {
     }
 }
 
-async function generateTextGenWithStreaming(generate_data, signal) {
+/**
+ * Sends a streaming request for textgenerationwebui.
+ * @param generate_data
+ * @param signal
+ * @returns {Promise<(function(): AsyncGenerator<{swipes: [], text: string, toolCalls: [], logprobs: {token: string, topLogprobs: Candidate[]}|null}, void, *>)|*>}
+ * @throws {Error} - If the response status is not OK, or from within the generator
+ */
+export async function generateTextGenWithStreaming(generate_data, signal) {
     generate_data.stream = true;
 
     const response = await fetch('/api/backends/text-completions/generate', {
@@ -944,6 +950,7 @@ export function parseTextgenLogprobs(token, logprobs) {
     }
 
     switch (settings.type) {
+        case KOBOLDCPP:
         case TABBY:
         case VLLM:
         case APHRODITE:
@@ -994,6 +1001,7 @@ export function parseTabbyLogprobs(data) {
  * @param {Response} response - Response from the server.
  * @param {string} decoded - Decoded response body.
  * @returns {void} Nothing.
+ * @throws {Error} If the response contains an error message, throws Error with the message.
  */
 function tryParseStreamingError(response, decoded) {
     let data = {};
@@ -1177,6 +1185,7 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
         'sampler_order': settings.type === textgen_types.KOBOLDCPP ? settings.sampler_order : undefined,
         'xtc_threshold': settings.xtc_threshold,
         'xtc_probability': settings.xtc_probability,
+        'nsigma': settings.nsigma,
     };
     const nonAphroditeParams = {
         'rep_pen': settings.rep_pen,
@@ -1208,7 +1217,6 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
     };
     const vllmParams = {
         'n': canMultiSwipe ? settings.n : 1,
-        'best_of': canMultiSwipe ? settings.n : 1,
         'ignore_eos': settings.ignore_eos_token,
         'spaces_between_special_tokens': settings.spaces_between_special_tokens,
         'seed': settings.seed >= 0 ? settings.seed : undefined,
@@ -1245,7 +1253,9 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
         'dynatemp_exponent': dynatemp ? settings.dynatemp_exponent : undefined,
         'xtc_threshold': settings.xtc_threshold,
         'xtc_probability': settings.xtc_probability,
+        'nsigma': settings.nsigma,
         'custom_token_bans': toIntArray(banned_tokens),
+        'no_repeat_ngram_size': settings.no_repeat_ngram_size,
     };
 
     if (settings.type === OPENROUTER) {
@@ -1255,6 +1265,7 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
 
     if (settings.type === KOBOLDCPP) {
         params.grammar = settings.grammar_string;
+        params.trim_stop = true;
     }
 
     if (settings.type === HUGGINGFACE) {
@@ -1326,6 +1337,9 @@ export function getTextGenGenerationData(finalPrompt, maxTokens, isImpersonate, 
             'dry_sequence_breakers': sequenceBreakers,
         };
         params = Object.assign(params, llamaCppParams);
+        if (!Array.isArray(sequenceBreakers) || sequenceBreakers.length === 0) {
+            delete params.dry_sequence_breakers;
+        }
     }
 
     eventSource.emitAndWait(event_types.TEXT_COMPLETION_SETTINGS_READY, params);

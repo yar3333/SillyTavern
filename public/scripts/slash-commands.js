@@ -1,3 +1,5 @@
+import { Fuse, DOMPurify } from '../lib.js';
+
 import {
     Generate,
     UNIQUE_APIS,
@@ -50,7 +52,7 @@ import { hideChatMessageRange } from './chats.js';
 import { getContext, saveMetadataDebounced } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { findGroupMemberId, groups, is_group_generating, openGroupById, resetSelectedGroup, saveGroupChat, selected_group } from './group-chats.js';
-import { chat_completion_sources, oai_settings, setupChatCompletionPromptManager } from './openai.js';
+import { chat_completion_sources, oai_settings, promptManager } from './openai.js';
 import { autoSelectPersona, retriggerFirstMessageOnEmptyChat, setPersonaLockState, togglePersonaLock, user_avatar } from './personas.js';
 import { addEphemeralStoppingString, chat_styles, flushEphemeralStoppingStrings, power_user } from './power-user.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
@@ -267,7 +269,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
@@ -323,7 +325,7 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
@@ -386,7 +388,7 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
@@ -604,7 +606,7 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'at',
-                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
+                description: 'position to insert the message (index-based, corresponding to message id). If not set, the message will be inserted at the end of the chat.\nNegative values (including -0) are accepted and will work similarly to how \'depth\' usually works. For example, -1 will insert the message right before the last message in chat.',
                 typeList: [ARGUMENT_TYPE.NUMBER],
                 enumProvider: commonEnumProviders.messages({ allowIdAfter: true }),
             }),
@@ -1697,6 +1699,49 @@ export function initDefaultSlashCommands() {
         helpString: 'Sets the model for the current API. Gets the current model name if no argument is provided.',
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'getpromptentry',
+        aliases: ['getpromptentries'],
+        callback: getPromptEntryCallback,
+        returns: 'true/false state of prompt(s)',
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'identifier',
+                description: 'Prompt entry identifier(s) to retrieve',
+                typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
+                acceptsMultiple: true,
+                enumProvider: () =>
+                    promptManager.serviceSettings.prompts
+                        .map(prompt => prompt.identifier)
+                        .map(identifier => new SlashCommandEnumValue(identifier)),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'name',
+                description: 'Prompt entry name(s) to retrieve',
+                typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
+                acceptsMultiple: true,
+                enumProvider: () =>
+                    promptManager.serviceSettings.prompts
+                        .map(prompt => prompt.name)
+                        .map(name => new SlashCommandEnumValue(name)),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'return',
+                description: 'Whether the return will be simple, a list, or a dict.',
+                typeList: [ARGUMENT_TYPE.STRING],
+                defaultValue: 'simple',
+                enumList: ['simple', 'list', 'dict'],
+            }),
+        ],
+        helpString: `
+            <div>
+                Gets the state of the specified prompt entries.
+            </div>
+            <div>
+                If <code>return</code> is <code>simple</code> (default) then the return will be a single value if only one value was retrieved; otherwise uses a dict (if the identifier parameter was used) or a list.
+            </div>
+        `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'setpromptentry',
         aliases: ['setpromptentries'],
         callback: setPromptEntryCallback,
@@ -1707,7 +1752,6 @@ export function initDefaultSlashCommands() {
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () => {
-                    const promptManager = setupChatCompletionPromptManager(oai_settings);
                     const prompts = promptManager.serviceSettings.prompts;
                     return prompts.map(prompt => new SlashCommandEnumValue(prompt.identifier, prompt.name, enumTypes.enum));
                 },
@@ -1718,7 +1762,6 @@ export function initDefaultSlashCommands() {
                 typeList: [ARGUMENT_TYPE.STRING, ARGUMENT_TYPE.LIST],
                 acceptsMultiple: true,
                 enumProvider: () => {
-                    const promptManager = setupChatCompletionPromptManager(oai_settings);
                     const prompts = promptManager.serviceSettings.prompts;
                     return prompts.map(prompt => new SlashCommandEnumValue(prompt.name, prompt.identifier, enumTypes.enum));
                 },
@@ -1824,6 +1867,30 @@ export function initDefaultSlashCommands() {
                 <pre><code>${getAvailableTokenizers().map(t => t.tokenizerKey).join(', ')}</code></pre>
             </div>
         `,
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'upper',
+        aliases: ['uppercase', 'to-upper'],
+        callback: (_, text) => typeof text === 'string' ? text.toUpperCase() : '',
+        returns: 'uppercase string',
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'string', [ARGUMENT_TYPE.STRING], true, false,
+            ),
+        ],
+        helpString: 'Converts the provided string to uppercase.',
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'lower',
+        aliases: ['lowercase', 'to-lower'],
+        callback: (_, text) => typeof text === 'string' ? text.toLowerCase() : '',
+        returns: 'lowercase string',
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'string', [ARGUMENT_TYPE.STRING], true, false,
+            ),
+        ],
+        helpString: 'Converts the provided string to lowercase.',
     }));
 
     registerVariableCommands();
@@ -2081,7 +2148,10 @@ async function buttonsCallback(args, text) {
             let popup;
 
             const buttonContainer = document.createElement('div');
-            buttonContainer.classList.add('flex-container', 'flexFlowColumn', 'wide100p', 'm-t-1');
+            buttonContainer.classList.add('flex-container', 'flexFlowColumn', 'wide100p');
+
+            const scrollableContainer = document.createElement('div');
+            scrollableContainer.classList.add('scrollable-buttons-container');
 
             for (const [result, button] of resultToButtonMap) {
                 const buttonElement = document.createElement('div');
@@ -2094,9 +2164,16 @@ async function buttonsCallback(args, text) {
                 buttonContainer.appendChild(buttonElement);
             }
 
+            scrollableContainer.appendChild(buttonContainer);
+
             const popupContainer = document.createElement('div');
             popupContainer.innerHTML = safeValue;
-            popupContainer.appendChild(buttonContainer);
+            popupContainer.appendChild(scrollableContainer);
+
+            // Ensure the popup uses flex layout
+            popupContainer.style.display = 'flex';
+            popupContainer.style.flexDirection = 'column';
+            popupContainer.style.maxHeight = '80vh'; // Limit the overall height of the popup
 
             popup = new Popup(popupContainer, POPUP_TYPE.TEXT, '', { okButton: 'Cancel', allowVerticalScrolling: true });
             popup.show()
@@ -2989,7 +3066,7 @@ async function sendUserMessageCallback(args, text) {
     let insertAt = Number(args?.at);
 
     // Convert possible depth parameter to index
-    if (!isNaN(insertAt) && (insertAt < 0 || insertAt === Number(-0))) {
+    if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
@@ -3363,7 +3440,7 @@ export async function sendMessageAs(args, text) {
     let insertAt = Number(args.at);
 
     // Convert possible depth parameter to index
-    if (!isNaN(insertAt) && (insertAt < 0 || insertAt === Number(-0))) {
+    if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
@@ -3417,7 +3494,7 @@ export async function sendNarratorMessage(args, text) {
     let insertAt = Number(args.at);
 
     // Convert possible depth parameter to index
-    if (!isNaN(insertAt) && (insertAt < 0 || insertAt === Number(-0))) {
+    if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
@@ -3506,7 +3583,7 @@ async function sendCommentMessage(args, text) {
     let insertAt = Number(args.at);
 
     // Convert possible depth parameter to index
-    if (!isNaN(insertAt) && (insertAt < 0 || insertAt === Number(-0))) {
+    if (!isNaN(insertAt) && (insertAt < 0 || Object.is(insertAt, -0))) {
         // Negative value means going back from current chat length. (E.g.: 8 messages, Depth 1 means insert at index 7)
         insertAt = chat.length + insertAt;
     }
@@ -3632,6 +3709,7 @@ function getModelOptions(quiet) {
         { id: 'model_cohere_select', api: 'openai', type: chat_completion_sources.COHERE },
         { id: 'model_perplexity_select', api: 'openai', type: chat_completion_sources.PERPLEXITY },
         { id: 'model_groq_select', api: 'openai', type: chat_completion_sources.GROQ },
+        { id: 'model_nanogpt_select', api: 'openai', type: chat_completion_sources.NANOGPT },
         { id: 'model_01ai_select', api: 'openai', type: chat_completion_sources.ZEROONEAI },
         { id: 'model_blockentropy_select', api: 'openai', type: chat_completion_sources.BLOCKENTROPY },
         { id: 'model_novel_select', api: 'novel', type: null },
@@ -3750,6 +3828,75 @@ function modelCallback(args, model) {
 }
 
 /**
+ * Gets the state of prompt entries (toggles) either via identifier/uuid or name.
+ * @param {object} args Object containing arguments
+ * @param {string} args.identifier Select prompt entry using an identifier (uuid)
+ * @param {string} args.name Select prompt entry using name
+ * @param {string} args.return The type of return value to use (simple, list, dict)
+ * @returns {Object} An object containing the states of the requested prompt entries
+ */
+function getPromptEntryCallback(args) {
+    const prompts = promptManager.serviceSettings.prompts;
+    let returnType = args.return ?? 'simple';
+
+    function parseArgs(arg) {
+        // Arg is already an array
+        if (Array.isArray(arg)) {
+            return arg;
+        }
+        const list = [];
+        try {
+            // Arg is a JSON-stringified array
+            const parsedArg = JSON.parse(arg);
+            list.push(...Array.isArray(parsedArg) ? parsedArg : [arg]);
+        } catch {
+            // Arg is a string
+            list.push(arg);
+        }
+        return list;
+    }
+
+    let identifiersList = parseArgs(args.identifier);
+    let nameList = parseArgs(args.name);
+
+    // Check if identifiers exists in prompt, else remove from list
+    if (identifiersList.length !== 0) {
+        identifiersList = identifiersList.filter(identifier => prompts.some(prompt => prompt.identifier === identifier));
+    }
+
+    if (nameList.length !== 0) {
+        nameList.forEach(name => {
+            let identifiers = prompts
+                .filter(entry => entry.name === name)
+                .map(entry => entry.identifier);
+            identifiersList = identifiersList.concat(identifiers);
+        });
+    }
+
+    // Get the state for each prompt entry
+    let promptStates = new Map();
+    identifiersList.forEach(identifier => {
+        const promptOrderEntry = promptManager.getPromptOrderEntry(promptManager.activeCharacter, identifier);
+        if (promptOrderEntry) {
+            promptStates.set(identifier, promptOrderEntry.enabled);
+        }
+    });
+
+    // If return is simple (default) but more than one prompt state was retrieved, then change return type
+    if (returnType === 'simple' && promptStates.size > 1) {
+        returnType = args.identifier ? 'dict' : 'list';
+    }
+
+    const result = (() => {
+        if (returnType === 'list') return [...promptStates.values()];
+        if (returnType === 'dict') return Object.fromEntries(promptStates);
+        return [...promptStates.values()][0];
+    })();
+
+    return result;
+}
+
+/**
  * Sets state of prompt entries (toggles) either via identifier/uuid or name.
  * @param {object} args Object containing arguments
  * @param {string} args.identifier Select prompt entry using an identifier (uuid)
@@ -3759,7 +3906,6 @@ function modelCallback(args, model) {
  */
 function setPromptEntryCallback(args, targetState) {
     // needs promptManager to manipulate prompt entries
-    const promptManager = setupChatCompletionPromptManager(oai_settings);
     const prompts = promptManager.serviceSettings.prompts;
 
     function parseArgs(arg) {
