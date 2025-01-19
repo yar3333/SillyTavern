@@ -31,6 +31,7 @@ export const tokenizers = {
     QWEN2: 15,
     COMMAND_R: 16,
     NEMO: 17,
+    DEEPSEEK: 18,
     BEST_MATCH: 99,
 };
 
@@ -45,6 +46,7 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.QWEN2,
     tokenizers.COMMAND_R,
     tokenizers.NEMO,
+    tokenizers.DEEPSEEK,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,
@@ -131,6 +133,11 @@ const TOKENIZER_URLS = {
         encode: '/api/tokenizers/nemo/encode',
         decode: '/api/tokenizers/nemo/decode',
         count: '/api/tokenizers/nemo/encode',
+    },
+    [tokenizers.DEEPSEEK]: {
+        encode: '/api/tokenizers/deepseek/encode',
+        decode: '/api/tokenizers/deepseek/decode',
+        count: '/api/tokenizers/deepseek/encode',
     },
     [tokenizers.API_TEXTGENERATIONWEBUI]: {
         encode: '/api/tokenizers/remote/textgenerationwebui/encode',
@@ -318,6 +325,12 @@ export function getTokenizerBestMatch(forApi) {
             if (model.includes('gemma')) {
                 return tokenizers.GEMMA;
             }
+            if (model.includes('nemo') || model.includes('pixtral')) {
+                return tokenizers.NEMO;
+            }
+            if (model.includes('deepseek')) {
+                return tokenizers.DEEPSEEK;
+            }
             if (model.includes('yi')) {
                 return tokenizers.YI;
             }
@@ -420,6 +433,7 @@ export async function getTokenCountAsync(str, padding = undefined) {
     }
 
     let tokenizerType = power_user.tokenizer;
+    let modelHash = '';
 
     if (main_api === 'openai') {
         if (padding === power_user.token_padding) {
@@ -435,13 +449,17 @@ export async function getTokenCountAsync(str, padding = undefined) {
         tokenizerType = getTokenizerBestMatch(main_api);
     }
 
+    if (tokenizerType === tokenizers.API_TEXTGENERATIONWEBUI) {
+        modelHash = getStringHash(getTextGenModel() || online_status).toString();
+    }
+
     if (padding === undefined) {
         padding = 0;
     }
 
     const cacheObject = getTokenCacheObject();
     const hash = getStringHash(str);
-    const cacheKey = `${tokenizerType}-${hash}+${padding}`;
+    const cacheKey = `${tokenizerType}-${hash}${modelHash}+${padding}`;
 
     if (typeof cacheObject[cacheKey] === 'number') {
         return cacheObject[cacheKey];
@@ -471,6 +489,7 @@ export function getTokenCount(str, padding = undefined) {
     }
 
     let tokenizerType = power_user.tokenizer;
+    let modelHash = '';
 
     if (main_api === 'openai') {
         if (padding === power_user.token_padding) {
@@ -486,13 +505,17 @@ export function getTokenCount(str, padding = undefined) {
         tokenizerType = getTokenizerBestMatch(main_api);
     }
 
+    if (tokenizerType === tokenizers.API_TEXTGENERATIONWEBUI) {
+        modelHash = getStringHash(getTextGenModel() || online_status).toString();
+    }
+
     if (padding === undefined) {
         padding = 0;
     }
 
     const cacheObject = getTokenCacheObject();
     const hash = getStringHash(str);
-    const cacheKey = `${tokenizerType}-${hash}+${padding}`;
+    const cacheKey = `${tokenizerType}-${hash}${modelHash}+${padding}`;
 
     if (typeof cacheObject[cacheKey] === 'number') {
         return cacheObject[cacheKey];
@@ -536,7 +559,6 @@ export function getTokenizerModel() {
         return oai_settings.openai_model;
     }
 
-    const turbo0301Tokenizer = 'gpt-3.5-turbo-0301';
     const turboTokenizer = 'gpt-3.5-turbo';
     const gpt4Tokenizer = 'gpt-4';
     const gpt4oTokenizer = 'gpt-4o';
@@ -551,19 +573,21 @@ export function getTokenizerModel() {
     const qwen2Tokenizer = 'qwen2';
     const commandRTokenizer = 'command-r';
     const nemoTokenizer = 'nemo';
+    const deepseekTokenizer = 'deepseek';
 
     // Assuming no one would use it for different models.. right?
     if (oai_settings.chat_completion_source == chat_completion_sources.SCALE) {
         return gpt4Tokenizer;
     }
 
+    if (oai_settings.chat_completion_source == chat_completion_sources.DEEPSEEK) {
+        return deepseekTokenizer;
+    }
+
     // Select correct tokenizer for WindowAI proxies
     if (oai_settings.chat_completion_source == chat_completion_sources.WINDOWAI && oai_settings.windowai_model) {
         if (oai_settings.windowai_model.includes('gpt-4')) {
             return gpt4Tokenizer;
-        }
-        else if (oai_settings.windowai_model.includes('gpt-3.5-turbo-0301')) {
-            return turbo0301Tokenizer;
         }
         else if (oai_settings.windowai_model.includes('gpt-3.5-turbo')) {
             return turboTokenizer;
@@ -610,9 +634,6 @@ export function getTokenizerModel() {
         else if (oai_settings.openrouter_model.includes('gpt-4')) {
             return gpt4Tokenizer;
         }
-        else if (oai_settings.openrouter_model.includes('gpt-3.5-turbo-0301')) {
-            return turbo0301Tokenizer;
-        }
         else if (oai_settings.openrouter_model.includes('gpt-3.5-turbo')) {
             return turboTokenizer;
         }
@@ -624,6 +645,9 @@ export function getTokenizerModel() {
         }
         else if (oai_settings.openrouter_model.includes('jamba')) {
             return jambaTokenizer;
+        }
+        else if (oai_settings.openrouter_model.includes('deepseek')) {
+            return deepseekTokenizer;
         }
     }
 

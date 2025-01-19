@@ -9,7 +9,18 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import _ from 'lodash';
 
 import { jsonParser, urlencodedParser } from '../express-common.js';
-import { getConfigValue, humanizedISO8601DateTime, tryParse, generateTimestamp, removeOldBackups } from '../util.js';
+import {
+    getConfigValue,
+    humanizedISO8601DateTime,
+    tryParse,
+    generateTimestamp,
+    removeOldBackups,
+    formatBytes,
+} from '../util.js';
+
+const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true);
+const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1));
+const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000));
 
 /**
  * Saves a chat to the backups directory.
@@ -19,9 +30,8 @@ import { getConfigValue, humanizedISO8601DateTime, tryParse, generateTimestamp, 
  */
 function backupChat(directory, name, chat) {
     try {
-        const isBackupDisabled = getConfigValue('disableChatBackup', false);
 
-        if (isBackupDisabled) {
+        if (!isBackupEnabled) {
             return;
         }
 
@@ -32,11 +42,20 @@ function backupChat(directory, name, chat) {
         writeFileAtomicSync(backupFile, chat, 'utf-8');
 
         removeOldBackups(directory, `chat_${name}_`);
+
+        if (isNaN(maxTotalChatBackups) || maxTotalChatBackups < 0) {
+            return;
+        }
+
+        removeOldBackups(directory, 'chat_', maxTotalChatBackups);
     } catch (err) {
         console.log(`Could not backup chat for ${name}`, err);
     }
 }
 
+/**
+ * @type {Map<string, import('lodash').DebouncedFunc<function(string, string, string): void>>}
+ */
 const backupFunctions = new Map();
 
 /**
@@ -45,24 +64,10 @@ const backupFunctions = new Map();
  * @returns {function(string, string, string): void} Backup function
  */
 function getBackupFunction(handle) {
-    const throttleInterval = getConfigValue('chatBackupThrottleInterval', 10_000);
     if (!backupFunctions.has(handle)) {
         backupFunctions.set(handle, _.throttle(backupChat, throttleInterval, { leading: true, trailing: true }));
     }
-    return backupFunctions.get(handle);
-}
-
-/**
- * Formats a byte size into a human-readable string with units
- * @param {number} bytes - The size in bytes to format
- * @returns {string} The formatted string (e.g., "1.5 MB")
- */
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    return backupFunctions.get(handle) || (() => {});
 }
 
 /**
@@ -257,6 +262,34 @@ function flattenChubChat(userName, characterName, lines) {
     }
 
     return (lines ?? []).map(convert).join('\n');
+}
+
+/**
+ * Imports a chat from RisuAI format.
+ * @param {string} userName User name
+ * @param {string} characterName Character name
+ * @param {object} jsonData Imported chat data
+ * @returns {string} Chat data
+ */
+function importRisuChat(userName, characterName, jsonData) {
+    /** @type {object[]} */
+    const chat = [{
+        user_name: userName,
+        character_name: characterName,
+        create_date: humanizedISO8601DateTime(),
+    }];
+
+    for (const message of jsonData.data.message) {
+        const isUser = message.role === 'user';
+        chat.push({
+            name: message.name ?? (isUser ? userName : characterName),
+            is_user: isUser,
+            send_date: Number(message.time ?? Date.now()),
+            mes: message.data ?? '',
+        });
+    }
+
+    return chat.map(obj => JSON.stringify(obj)).join('\n');
 }
 
 export const router = express.Router();
@@ -476,6 +509,8 @@ router.post('/import', urlencodedParser, function (request, response) {
                 importFunc = importOobaChat;
             } else if (Array.isArray(jsonData.messages)) { // Agnai's format
                 importFunc = importAgnaiChat;
+            } else if (jsonData.type === 'risuChat') { // RisuAI format
+                importFunc = importRisuChat;
             } else { // Unknown format
                 console.log('Incorrect chat format .json');
                 return response.send({ error: true });
@@ -664,12 +699,12 @@ router.post('/search', jsonParser, function (request, response) {
                 .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
                 .filter(x => x && typeof x.mes === 'string');
 
-            if (messages.length === 0) {
+            if (query && messages.length === 0) {
                 continue;
             }
 
             const lastMessage = messages[messages.length - 1];
-            const lastMesDate = lastMessage?.send_date || new Date().toISOString();
+            const lastMesDate = lastMessage?.send_date || Math.round(fs.statSync(chatFile.path).mtimeMs);
 
             // If no search query, just return metadata
             if (!query) {
@@ -702,7 +737,7 @@ router.post('/search', jsonParser, function (request, response) {
         }
 
         // Sort by last message date descending
-        results.sort((a, b) => new Date(b.last_mes) - new Date(a.last_mes));
+        results.sort((a, b) => new Date(b.last_mes).getTime() - new Date(a.last_mes).getTime());
         return response.send(results);
 
     } catch (error) {

@@ -158,7 +158,8 @@ async function tryReadImage(imgPath, crop) {
         return image;
     }
     // If it's an unsupported type of image (APNG) - just read the file as buffer
-    catch {
+    catch (error) {
+        console.log(`Failed to read image: ${imgPath}`, error);
         return fs.readFileSync(imgPath);
     }
 }
@@ -549,7 +550,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
  * @returns {Promise<string>} Internal name of the character
  */
 async function importFromCharX(uploadPath, { request }, preservedFileName) {
-    const data = fs.readFileSync(uploadPath);
+    const data = fs.readFileSync(uploadPath).buffer;
     fs.rmSync(uploadPath);
     console.log('Importing from CharX');
     const cardBuffer = await extractFileFromZipBuffer(data, 'card.json');
