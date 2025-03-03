@@ -95,6 +95,7 @@ import {
     resetMovableStyles,
     forceCharacterEditorTokenize,
     applyPowerUserSettings,
+    generatedTextFiltered,
 } from './scripts/power-user.js';
 
 import {
@@ -169,6 +170,7 @@ import {
     toggleDrawer,
     isElementInViewport,
     copyText,
+    escapeHtml,
 } from './scripts/utils.js';
 import { debounce_timeout } from './scripts/constants.js';
 
@@ -267,6 +269,8 @@ import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
 import { deriveTemplatesFromChatTemplate } from './scripts/chat-templates.js';
 import { getContext } from './scripts/st-context.js';
+import { extractReasoningFromData, initReasoning, PromptReasoning, ReasoningHandler, removeReasoningFromString, updateReasoningUI } from './scripts/reasoning.js';
+import { accountStorage } from './scripts/util/AccountStorage.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -416,7 +420,7 @@ DOMPurify.addHook('uponSanitizeElement', (node, _, config) => {
         const entityId = getCurrentEntityId();
         const warningShownKey = `mediaWarningShown:${entityId}`;
 
-        if (localStorage.getItem(warningShownKey) === null) {
+        if (accountStorage.getItem(warningShownKey) === null) {
             const warningToast = toastr.warning(
                 t`Use the 'Ext. Media' button to allow it. Click on this message to dismiss.`,
                 t`External media has been blocked`,
@@ -427,7 +431,7 @@ DOMPurify.addHook('uponSanitizeElement', (node, _, config) => {
                 },
             );
 
-            localStorage.setItem(warningShownKey, 'true');
+            accountStorage.setItem(warningShownKey, 'true');
         }
     }
 });
@@ -444,6 +448,7 @@ export const event_types = {
     MESSAGE_DELETED: 'message_deleted',
     MESSAGE_UPDATED: 'message_updated',
     MESSAGE_FILE_EMBEDDED: 'message_file_embedded',
+    MORE_MESSAGES_LOADED: 'more_messages_loaded',
     IMPERSONATE_READY: 'impersonate_ready',
     CHAT_CHANGED: 'chat_id_changed',
     GENERATION_AFTER_COMMANDS: 'GENERATION_AFTER_COMMANDS',
@@ -492,6 +497,7 @@ export const event_types = {
     /** @deprecated The event is aliased to STREAM_TOKEN_RECEIVED. */
     SMOOTH_STREAM_TOKEN_RECEIVED: 'stream_token_received',
     STREAM_TOKEN_RECEIVED: 'stream_token_received',
+    STREAM_REASONING_DONE: 'stream_reasoning_done',
     FILE_ATTACHMENT_DELETED: 'file_attachment_deleted',
     WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate',
     OPEN_CHARACTER_LIBRARY: 'open_character_library',
@@ -724,6 +730,7 @@ async function getSystemMessages() {
             is_user: false,
             is_system: true,
             mes: await renderTemplateAsync('assistantNote'),
+            uses_system_ui: true,
             extra: {
                 isSmallSys: true,
             },
@@ -981,6 +988,7 @@ async function firstLoadInit() {
     initServerHistory();
     initSettingsSearch();
     initBulkEdit();
+    initReasoning();
     await initScrapers();
     doDailyExtensionUpdatesCheck();
     await hideLoader();
@@ -1484,7 +1492,7 @@ export async function printCharacters(fullRefresh = false) {
 
     $('#rm_print_characters_pagination').pagination({
         dataSource: entities,
-        pageSize: Number(localStorage.getItem(storageKey)) || per_page_default,
+        pageSize: Number(accountStorage.getItem(storageKey)) || per_page_default,
         sizeChangerOptions: [10, 25, 50, 100, 250, 500, 1000],
         pageRange: 1,
         pageNumber: saveCharactersPage || 1,
@@ -1528,7 +1536,7 @@ export async function printCharacters(fullRefresh = false) {
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
         },
         afterSizeSelectorChange: function (e) {
-            localStorage.setItem(storageKey, e.target.value);
+            accountStorage.setItem(storageKey, e.target.value);
         },
         afterPaging: function (e) {
             saveCharactersPage = e;
@@ -1830,7 +1838,7 @@ export async function replaceCurrentChat() {
     }
 }
 
-export function showMoreMessages(messagesToLoad = null) {
+export async function showMoreMessages(messagesToLoad = null) {
     const firstDisplayedMesId = $('#chat').children('.mes').first().attr('mesid');
     let messageId = Number(firstDisplayedMesId);
     let count = messagesToLoad || power_user.chat_truncation || Number.MAX_SAFE_INTEGER;
@@ -1860,6 +1868,8 @@ export function showMoreMessages(messagesToLoad = null) {
         const newHeight = $('#chat').prop('scrollHeight');
         $('#chat').scrollTop(newHeight - prevHeight);
     }
+
+    await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
 }
 
 export async function printMessages() {
@@ -1988,14 +1998,15 @@ export async function sendTextareaMessage() {
  * @param {boolean} isUser If the message was sent by the user
  * @param {number} messageId Message index in chat array
  * @param {object} [sanitizerOverrides] DOMPurify sanitizer option overrides
+ * @param {boolean} [isReasoning] If the message is reasoning output
  * @returns {string} HTML string
  */
-export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides = {}) {
+export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides = {}, isReasoning = false) {
     if (!mes) {
         return '';
     }
 
-    if (Number(messageId) === 0 && !isSystem && !isUser) {
+    if (Number(messageId) === 0 && !isSystem && !isUser && !isReasoning) {
         const mesBeforeReplace = mes;
         const chatMessage = chat[messageId];
         mes = substituteParams(mes, undefined, ch_name);
@@ -2024,6 +2035,9 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
     if (!isSystem) {
         function getRegexPlacement() {
             try {
+                if (isReasoning) {
+                    return regex_placement.REASONING;
+                }
                 if (isUser) {
                     return regex_placement.USER_INPUT;
                 } else if (chat[messageId]?.extra?.type === 'narrator') {
@@ -2056,6 +2070,17 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
     if (!isSystem && power_user.encode_tags) {
         mes = mes.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     }
+
+    // Make sure reasoning strings are always shown, even if they include "<" or ">"
+    [power_user.reasoning.prefix, power_user.reasoning.suffix].forEach((reasoningString) => {
+        if (!reasoningString || !reasoningString.trim().length) {
+            return;
+        }
+        // Only replace the first occurrence of the reasoning string
+        if (mes.includes(reasoningString)) {
+            mes = mes.replace(reasoningString, escapeHtml(reasoningString));
+        }
+    });
 
     if (!isSystem) {
         // Save double quotes in tags as a special character to prevent them from being encoded
@@ -2167,26 +2192,29 @@ function insertSVGIcon(mes, extra) {
         modelName = extra.api;
     }
 
-    const image = new Image();
-    // Add classes for styling and identification
-    image.classList.add('icon-svg', 'timestamp-icon');
-    image.src = `/img/${modelName}.svg`;
-    image.title = `${extra?.api ? extra.api + ' - ' : ''}${extra?.model ?? ''}`;
-
-    image.onload = async function () {
-        // Check if an SVG already exists adjacent to the timestamp
-        let existingSVG = mes.find('.timestamp').next('.timestamp-icon');
-
-        if (existingSVG.length) {
-            // Replace existing SVG
-            existingSVG.replaceWith(image);
-        } else {
-            // Append the new SVG if none exists
-            mes.find('.timestamp').after(image);
-        }
-
-        await SVGInject(image);
+    const insertOrReplaceSVG = (image, className, targetSelector, insertBefore) => {
+        image.onload = async function () {
+            let existingSVG = insertBefore ? mes.find(targetSelector).prev(`.${className}`) : mes.find(targetSelector).next(`.${className}`);
+            if (existingSVG.length) {
+                existingSVG.replaceWith(image);
+            } else {
+                if (insertBefore) mes.find(targetSelector).before(image);
+                else mes.find(targetSelector).after(image);
+            }
+            await SVGInject(image);
+        };
     };
+
+    const createModelImage = (className, targetSelector, insertBefore) => {
+        const image = new Image();
+        image.classList.add('icon-svg', className);
+        image.src = `/img/${modelName}.svg`;
+        image.title = `${extra?.api ? extra.api + ' - ' : ''}${extra?.model ?? ''}`;
+        insertOrReplaceSVG(image, className, targetSelector, insertBefore);
+    };
+
+    createModelImage('timestamp-icon', '.timestamp');
+    createModelImage('thinking-icon', '.mes_reasoning_header_title', true);
 }
 
 
@@ -2228,6 +2256,8 @@ function getMessageFromTemplate({
     timerValue && mes.find('.mes_timer').attr('title', timerTitle).text(timerValue);
     bookmarkLink && updateBookmarkDisplay(mes);
 
+    updateReasoningUI(mes);
+
     if (power_user.timestamp_model_icon && extra?.api) {
         insertSVGIcon(mes, extra);
     }
@@ -2235,10 +2265,22 @@ function getMessageFromTemplate({
     return mes;
 }
 
-export function updateMessageBlock(messageId, message) {
+/**
+ * Re-renders a message block with updated content.
+ * @param {number} messageId Message ID
+ * @param {object} message Message object
+ * @param {object} [options={}] Optional arguments
+ * @param {boolean} [options.rerenderMessage=true] Whether to re-render the message content (inside <c>.mes_text</c>)
+ */
+export function updateMessageBlock(messageId, message, { rerenderMessage = true } = {}) {
     const messageElement = $(`#chat [mesid="${messageId}"]`);
-    const text = message?.extra?.display_text ?? message.mes;
-    messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user, messageId));
+    if (rerenderMessage) {
+        const text = message?.extra?.display_text ?? message.mes;
+        messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user, messageId, {}, false));
+    }
+
+    updateReasoningUI(messageElement);
+
     addCopyToCodeBlocks(messageElement);
     appendMediaToMessage(message, messageElement);
 }
@@ -2395,8 +2437,9 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
         mes.is_user,
         chat.indexOf(mes),
         sanitizerOverrides,
+        false,
     );
-    const bias = messageFormatting(mes.extra?.bias ?? '', '', false, false, -1);
+    const bias = messageFormatting(mes.extra?.bias ?? '', '', false, false, -1, {}, false);
     let bookmarkLink = mes?.extra?.bookmark_link ?? '';
 
     let params = {
@@ -2413,7 +2456,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
         timestamp: timestamp,
         extra: mes.extra,
         tokenCount: mes.extra?.token_count ?? 0,
-        ...formatGenerationTimer(mes.gen_started, mes.gen_finished, mes.extra?.token_count),
+        ...formatGenerationTimer(mes.gen_started, mes.gen_finished, mes.extra?.token_count, mes.extra?.reasoning_duration),
     };
 
     const renderedMessage = getMessageFromTemplate(params);
@@ -2466,6 +2509,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
         swipeMessage.attr('swipeid', params.swipeId);
         swipeMessage.find('.mes_text').html(messageText).attr('title', title);
         swipeMessage.find('.timestamp').text(timestamp).attr('title', `${params.extra.api} - ${params.extra.model}`);
+        updateReasoningUI(swipeMessage);
         appendMediaToMessage(mes, swipeMessage);
         if (power_user.timestamp_model_icon && params.extra?.api) {
             insertSVGIcon(swipeMessage, params.extra);
@@ -2532,13 +2576,14 @@ export function formatCharacterAvatar(characterAvatar) {
  * @param {Date} gen_started Date when generation was started
  * @param {Date} gen_finished Date when generation was finished
  * @param {number} tokenCount Number of tokens generated (0 if not available)
+ * @param {number?} [reasoningDuration=null] Reasoning duration (null if no reasoning was done)
  * @returns {Object} Object containing the formatted timer value and title
  * @example
  * const { timerValue, timerTitle } = formatGenerationTimer(gen_started, gen_finished, tokenCount);
  * console.log(timerValue); // 1.2s
  * console.log(timerTitle); // Generation queued: 12:34:56 7 Jan 2021\nReply received: 12:34:57 7 Jan 2021\nTime to generate: 1.2 seconds\nToken rate: 5 t/s
  */
-function formatGenerationTimer(gen_started, gen_finished, tokenCount) {
+function formatGenerationTimer(gen_started, gen_finished, tokenCount, reasoningDuration = null) {
     if (!gen_started || !gen_finished) {
         return {};
     }
@@ -2552,8 +2597,9 @@ function formatGenerationTimer(gen_started, gen_finished, tokenCount) {
         `Generation queued: ${start.format(dateFormat)}`,
         `Reply received: ${finish.format(dateFormat)}`,
         `Time to generate: ${seconds} seconds`,
+        reasoningDuration > 0 ? `Time to think: ${reasoningDuration / 1000} seconds` : '',
         tokenCount > 0 ? `Token rate: ${Number(tokenCount / seconds).toFixed(1)} t/s` : '',
-    ].join('\n');
+    ].filter(x => x).join('\n').trim();
 
     if (isNaN(seconds) || seconds < 0) {
         return { timerValue: '', timerTitle };
@@ -2741,7 +2787,8 @@ export async function generateQuietPrompt(quiet_prompt, quietToLoud, skipWIAN, q
             TempResponseLength.save(main_api, responseLength);
             eventHook = TempResponseLength.setupEventHook(main_api);
         }
-        return await Generate('quiet', options);
+        const result = await Generate('quiet', options);
+        return removeReasoningFromString(result);
     } finally {
         if (responseLengthCustomized && TempResponseLength.isCustomized()) {
             TempResponseLength.restore(main_api);
@@ -3041,8 +3088,8 @@ export function isStreamingEnabled() {
         (main_api == 'openai' &&
             oai_settings.stream_openai &&
             !noStreamSources.includes(oai_settings.chat_completion_source) &&
-            !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && oai_settings.openai_model.startsWith('o1-')) &&
-            !(oai_settings.chat_completion_source == chat_completion_sources.MAKERSUITE && oai_settings.google_model.includes('bison')))
+            !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && ['o1-2024-12-17', 'o1'].includes(oai_settings.openai_model))
+        )
         || (main_api == 'kobold' && kai_settings.streaming_kobold && kai_flags.can_use_streaming)
         || (main_api == 'novel' && nai_settings.streaming_novel)
         || (main_api == 'textgenerationwebui' && textgen_settings.streaming));
@@ -3071,9 +3118,13 @@ class StreamingProcessor {
     constructor(type, forceName2, timeStarted, continueMessage) {
         this.result = '';
         this.messageId = -1;
+        /** @type {HTMLElement} */
         this.messageDom = null;
+        /** @type {HTMLElement} */
         this.messageTextDom = null;
+        /** @type {HTMLElement} */
         this.messageTimerDom = null;
+        /** @type {HTMLElement} */
         this.messageTokenCounterDom = null;
         /** @type {HTMLTextAreaElement} */
         this.sendTextarea = document.querySelector('#send_textarea');
@@ -3090,6 +3141,8 @@ class StreamingProcessor {
         /** @type {import('./scripts/logprobs.js').TokenLogprobs[]} */
         this.messageLogprobs = [];
         this.toolCalls = [];
+        // Initialize reasoning in its own handler
+        this.reasoningHandler = new ReasoningHandler(timeStarted);
     }
 
     #checkDomElements(messageId) {
@@ -3099,6 +3152,7 @@ class StreamingProcessor {
             this.messageTimerDom = this.messageDom?.querySelector('.mes_timer');
             this.messageTokenCounterDom = this.messageDom?.querySelector('.tokenCounterDisplay');
         }
+        this.reasoningHandler.updateDom(messageId);
     }
 
     #updateMessageBlockVisibility() {
@@ -3108,22 +3162,12 @@ class StreamingProcessor {
         }
     }
 
-    showMessageButtons(messageId) {
-        if (messageId == -1) {
-            return;
-        }
-
-        showStopButton();
-        $(`#chat .mes[mesid="${messageId}"] .mes_buttons`).css({ 'display': 'none' });
+    markUIGenStarted() {
+        deactivateSendButtons();
     }
 
-    hideMessageButtons(messageId) {
-        if (messageId == -1) {
-            return;
-        }
-
-        hideStopButton();
-        $(`#chat .mes[mesid="${messageId}"] .mes_buttons`).css({ 'display': 'flex' });
+    markUIGenStopped() {
+        activateSendButtons();
     }
 
     async onStartStreaming(text) {
@@ -3132,20 +3176,18 @@ class StreamingProcessor {
         if (this.type == 'impersonate') {
             this.sendTextarea.value = '';
             this.sendTextarea.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        else {
-            await saveReply(this.type, text, true);
+        } else {
+            await saveReply(this.type, text, true, '', [], '');
             messageId = chat.length - 1;
             this.#checkDomElements(messageId);
-            this.showMessageButtons(messageId);
+            this.markUIGenStarted();
         }
-
         hideSwipeButtons();
         scrollChatToBottom();
         return messageId;
     }
 
-    onProgressStreaming(messageId, text, isFinal) {
+    async onProgressStreaming(messageId, text, isFinal) {
         const isImpersonate = this.type == 'impersonate';
         const isContinue = this.type == 'continue';
 
@@ -3157,11 +3199,9 @@ class StreamingProcessor {
 
         let processedText = cleanUpMessage(text, isImpersonate, isContinue, !isFinal, this.stoppingStrings);
 
-        // Predict unbalanced asterisks / quotes during streaming
         const charsToBalance = ['*', '"', '```'];
         for (const char of charsToBalance) {
             if (!isFinal && isOdd(countOccurrences(processedText, char))) {
-                // Add character at the end to balance it
                 const separator = char.length > 1 ? '\n' : '';
                 processedText = processedText.trimEnd() + separator + char;
             }
@@ -3170,23 +3210,25 @@ class StreamingProcessor {
         if (isImpersonate) {
             this.sendTextarea.value = processedText;
             this.sendTextarea.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        else {
+        } else {
+            const mesChanged = chat[messageId]['mes'] !== processedText;
             this.#checkDomElements(messageId);
             this.#updateMessageBlockVisibility();
             const currentTime = new Date();
-            // Don't waste time calculating token count for streaming
-            const currentTokenCount = isFinal && power_user.message_token_count_enabled ? getTokenCount(processedText, 0) : 0;
-            const timePassed = formatGenerationTimer(this.timeStarted, currentTime, currentTokenCount);
             chat[messageId]['mes'] = processedText;
             chat[messageId]['gen_started'] = this.timeStarted;
             chat[messageId]['gen_finished'] = currentTime;
+            if (!chat[messageId]['extra']) {
+                chat[messageId]['extra'] = {};
+            }
 
+            // Update reasoning
+            await this.reasoningHandler.process(messageId, mesChanged);
+
+            // Token count update.
+            const tokenCountText = this.reasoningHandler.reasoning + processedText;
+            const currentTokenCount = isFinal && power_user.message_token_count_enabled ? getTokenCount(tokenCountText, 0) : 0;
             if (currentTokenCount) {
-                if (!chat[messageId]['extra']) {
-                    chat[messageId]['extra'] = {};
-                }
-
                 chat[messageId]['extra']['token_count'] = currentTokenCount;
                 if (this.messageTokenCounterDom instanceof HTMLElement) {
                     this.messageTokenCounterDom.textContent = `${currentTokenCount}t`;
@@ -3204,14 +3246,19 @@ class StreamingProcessor {
                 chat[messageId].is_system,
                 chat[messageId].is_user,
                 messageId,
+                {},
+                false,
             );
             if (this.messageTextDom instanceof HTMLElement) {
                 this.messageTextDom.innerHTML = formattedText;
             }
+
+            const timePassed = formatGenerationTimer(this.timeStarted, currentTime, currentTokenCount, this.reasoningHandler.getDuration());
             if (this.messageTimerDom instanceof HTMLElement) {
                 this.messageTimerDom.textContent = timePassed.timerValue;
                 this.messageTimerDom.title = timePassed.timerTitle;
             }
+
             this.setFirstSwipe(messageId);
         }
 
@@ -3221,9 +3268,11 @@ class StreamingProcessor {
     }
 
     async onFinishStreaming(messageId, text) {
-        this.hideMessageButtons(this.messageId);
-        this.onProgressStreaming(messageId, text, true);
+        this.markUIGenStopped();
+        await this.onProgressStreaming(messageId, text, true);
         addCopyToCodeBlocks($(`#chat .mes[mesid="${messageId}"]`));
+
+        await this.reasoningHandler.finish(messageId);
 
         if (Array.isArray(this.swipes) && this.swipes.length > 0) {
             const message = chat[messageId];
@@ -3252,39 +3301,11 @@ class StreamingProcessor {
         unblockGeneration();
         generatedPromptCache = '';
 
-        //console.log("Generated text size:", text.length, text)
-
         const isAborted = this.abortController.signal.aborted;
-        if (power_user.auto_swipe && !isAborted) {
-            function containsBlacklistedWords(str, blacklist, threshold) {
-                const regex = new RegExp(`\\b(${blacklist.join('|')})\\b`, 'gi');
-                const matches = str.match(regex) || [];
-                return matches.length >= threshold;
-            }
-
-            const generatedTextFiltered = (text) => {
-                if (text) {
-                    if (power_user.auto_swipe_minimum_length) {
-                        if (text.length < power_user.auto_swipe_minimum_length && text.length !== 0) {
-                            console.log('Generated text size too small');
-                            return true;
-                        }
-                    }
-                    if (power_user.auto_swipe_blacklist_threshold) {
-                        if (containsBlacklistedWords(text, power_user.auto_swipe_blacklist, power_user.auto_swipe_blacklist_threshold)) {
-                            console.log('Generated text has blacklisted words');
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            };
-
-            if (generatedTextFiltered(text)) {
-                swipe_right();
-                return;
-            }
+        if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
+            return swipe_right();
         }
+
         playMessageSound();
     }
 
@@ -3292,7 +3313,7 @@ class StreamingProcessor {
         this.abortController.abort();
         this.isStopped = true;
 
-        this.hideMessageButtons(this.messageId);
+        this.markUIGenStopped();
         generatedPromptCache = '';
         unblockGeneration();
 
@@ -3318,7 +3339,7 @@ class StreamingProcessor {
     }
 
     /**
-     * @returns {Generator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[] }, void, void>}
+     * @returns {Generator<{ text: string, swipes: string[], logprobs: import('./scripts/logprobs.js').TokenLogprobs, toolCalls: any[], state: any }, void, void>}
      */
     *nullStreamingGeneration() {
         throw new Error('Generation function for streaming is not hooked up');
@@ -3340,10 +3361,10 @@ class StreamingProcessor {
         try {
             const sw = new Stopwatch(1000 / power_user.streaming_fps);
             const timestamps = [];
-            for await (const { text, swipes, logprobs, toolCalls } of this.generator()) {
+            for await (const { text, swipes, logprobs, toolCalls, state } of this.generator()) {
                 timestamps.push(Date.now());
-                if (this.isStopped) {
-                    return;
+                if (this.isStopped || this.abortController.signal.aborted) {
+                    return this.result;
                 }
 
                 this.toolCalls = toolCalls;
@@ -3352,8 +3373,10 @@ class StreamingProcessor {
                 if (logprobs) {
                     this.messageLogprobs.push(...(Array.isArray(logprobs) ? logprobs : [logprobs]));
                 }
+                // Get the updated reasoning string into the handler
+                this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning ?? '');
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
-                await sw.tick(() => this.onProgressStreaming(this.messageId, this.continueMessage + text));
+                await sw.tick(async () => await this.onProgressStreaming(this.messageId, this.continueMessage + text));
             }
             const seconds = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
             console.warn(`Stream stats: ${timestamps.length} tokens, ${seconds.toFixed(2)} seconds, rate: ${Number(timestamps.length / seconds).toFixed(2)} TPS`);
@@ -3429,7 +3452,7 @@ export async function generateRaw(prompt, api, instructOverride, quietToLoud, sy
                 break;
             }
             case 'textgenerationwebui':
-                generateData = getTextGenGenerationData(prompt, amount_gen, false, false, null, 'quiet');
+                generateData = await getTextGenGenerationData(prompt, amount_gen, false, false, null, 'quiet');
                 TempResponseLength.restore(api);
                 break;
             case 'openai': {
@@ -3836,6 +3859,27 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             index,
         };
     }));
+
+    const reasoning = new PromptReasoning();
+    for (let i = coreChat.length - 1; i >= 0; i--) {
+        const depth = coreChat.length - i - 1;
+        const isPrefix = isContinue && i === coreChat.length - 1;
+        coreChat[i] = {
+            ...coreChat[i],
+            mes: reasoning.addToMessage(
+                coreChat[i].mes,
+                getRegexedString(
+                    String(coreChat[i].extra?.reasoning ?? ''),
+                    regex_placement.REASONING,
+                    { isPrompt: true, depth: depth },
+                ),
+                isPrefix,
+            ),
+        };
+        if (reasoning.isLimitReached()) {
+            break;
+        }
+    }
 
     // Determine token limit
     let this_max_context = getMaxContextSize();
@@ -4395,7 +4439,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // For prompt bit itemization
     let mesSendString = '';
 
-    function getCombinedPrompt(isNegative) {
+    async function getCombinedPrompt(isNegative) {
         // Only return if the guidance scale doesn't exist or the value is 1
         // Also don't return if constructing the neutral prompt
         if (isNegative && !useCfgPrompt) {
@@ -4422,7 +4466,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     // TODO: Make all extension prompts use an array/splice method
                     const lengthDiff = mesSend.length - cfgPrompt.depth;
                     const cfgDepth = lengthDiff >= 0 ? lengthDiff : 0;
-                    finalMesSend[cfgDepth].extensionPrompts.push(`${cfgPrompt.value}\n`);
+                    const cfgMessage = finalMesSend[cfgDepth];
+                    if (cfgMessage) {
+                        if (!Array.isArray(finalMesSend[cfgDepth].extensionPrompts)) {
+                            finalMesSend[cfgDepth].extensionPrompts = [];
+                        }
+                        finalMesSend[cfgDepth].extensionPrompts.push(`${cfgPrompt.value}\n`);
+                    }
                 }
             }
         }
@@ -4498,13 +4548,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         };
 
         // Before returning the combined prompt, give available context related information to all subscribers.
-        eventSource.emitAndWait(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
+        await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
 
         // If one or multiple subscribers return a value, forfeit the responsibillity of flattening the context.
         return !data.combinedPrompt ? combine() : data.combinedPrompt;
     }
 
-    let finalPrompt = getCombinedPrompt(false);
+    let finalPrompt = await getCombinedPrompt(false);
 
     const eventData = { prompt: finalPrompt, dryRun: dryRun };
     await eventSource.emit(event_types.GENERATE_AFTER_COMBINE_PROMPTS, eventData);
@@ -4538,8 +4588,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             }
             break;
         case 'textgenerationwebui': {
-            const cfgValues = useCfgPrompt ? { guidanceScale: cfgGuidanceScale, negativePrompt: getCombinedPrompt(true) } : null;
-            generate_data = getTextGenGenerationData(finalPrompt, maxLength, isImpersonate, isContinue, cfgValues, type);
+            const cfgValues = useCfgPrompt ? { guidanceScale: cfgGuidanceScale, negativePrompt: await getCombinedPrompt(true) } : null;
+            generate_data = await getTextGenGenerationData(finalPrompt, maxLength, isImpersonate, isContinue, cfgValues, type);
             break;
         }
         case 'novel': {
@@ -4739,11 +4789,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         //const getData = await response.json();
         let getMessage = extractMessageFromData(data);
         let title = extractTitleFromData(data);
+        let reasoning = extractReasoningFromData(data);
         kobold_horde_model = title;
 
         const swipes = extractMultiSwipes(data, type);
 
         messageChunk = cleanUpMessage(getMessage, isImpersonate, isContinue, false);
+        reasoning = getRegexedString(reasoning, regex_placement.REASONING);
+
+        if (power_user.trim_spaces) {
+            reasoning = reasoning.trim();
+        }
 
         if (isContinue) {
             getMessage = continue_mag + getMessage;
@@ -4765,10 +4821,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         else {
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
             if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply(type, getMessage, false, title, swipes));
+                ({ type, getMessage } = await saveReply(type, getMessage, false, title, swipes, reasoning));
             }
             else {
-                ({ type, getMessage } = await saveReply('appendFinal', getMessage, false, title, swipes));
+                ({ type, getMessage } = await saveReply('appendFinal', getMessage, false, title, swipes, reasoning));
             }
 
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
@@ -4802,32 +4858,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         const isAborted = abortController && abortController.signal.aborted;
-        if (power_user.auto_swipe && !isAborted) {
-            console.debug('checking for autoswipeblacklist on non-streaming message');
-            function containsBlacklistedWords(getMessage, blacklist, threshold) {
-                console.debug('checking blacklisted words');
-                const regex = new RegExp(`\\b(${blacklist.join('|')})\\b`, 'gi');
-                const matches = getMessage.match(regex) || [];
-                return matches.length >= threshold;
-            }
-
-            const generatedTextFiltered = (getMessage) => {
-                if (power_user.auto_swipe_blacklist_threshold) {
-                    if (containsBlacklistedWords(getMessage, power_user.auto_swipe_blacklist, power_user.auto_swipe_blacklist_threshold)) {
-                        console.debug('Generated text has blacklisted words');
-                        return true;
-                    }
-                }
-
-                return false;
-            };
-            if (generatedTextFiltered(getMessage)) {
-                console.debug('swiping right automatically');
-                is_send_press = false;
-                swipe_right();
-                // TODO: do we want to resolve after an auto-swipe?
-                return;
-            }
+        if (!isAborted && power_user.auto_swipe && generatedTextFiltered(getMessage)) {
+            is_send_press = false;
+            return swipe_right();
         }
 
         console.debug('/api/chats/save called by /Generate');
@@ -5482,13 +5515,24 @@ async function promptItemize(itemizedPrompts, requestedMesId) {
         toastr.info(t`Copied!`);
     });
 
-    popup.dlg.querySelector('#showRawPrompt').addEventListener('click', function () {
+    popup.dlg.querySelector('#showRawPrompt').addEventListener('click', async function () {
         //console.log(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
         console.log(PromptArrayItemForRawPromptDisplay);
         console.log(itemizedPrompts);
         console.log(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
 
         const rawPrompt = flatten(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt);
+
+        // Mobile needs special handholding. The side-view on the popup wouldn't work,
+        // so we just show an additional popup for this.
+        if (isMobile()) {
+            const content = document.createElement('div');
+            content.classList.add('tokenItemizingMaintext');
+            content.innerText = rawPrompt;
+            const popup = new Popup(content, POPUP_TYPE.TEXT, null, { allowVerticalScrolling: true, leftAlign: true });
+            await popup.show();
+            return;
+        }
 
         //let DisplayStringifiedPrompt = JSON.stringify(itemizedPrompts[PromptArrayItemForRawPromptDisplay].rawPrompt).replace(/\n+/g, '<br>');
         const rawPromptWrapper = document.getElementById('rawPromptWrapper');
@@ -5852,7 +5896,7 @@ export function cleanUpMessage(getMessage, isImpersonate, isContinue, displayInc
     return getMessage;
 }
 
-export async function saveReply(type, getMessage, fromStreaming, title, swipes) {
+export async function saveReply(type, getMessage, fromStreaming, title, swipes, reasoning) {
     if (type != 'append' && type != 'continue' && type != 'appendFinal' && chat.length && (chat[chat.length - 1]['swipe_id'] === undefined ||
         chat[chat.length - 1]['is_user'])) {
         type = 'normal';
@@ -5860,6 +5904,15 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
 
     if (chat.length && (!chat[chat.length - 1]['extra'] || typeof chat[chat.length - 1]['extra'] !== 'object')) {
         chat[chat.length - 1]['extra'] = {};
+    }
+
+    // Coerce null/undefined to empty string
+    if (chat.length && !chat[chat.length - 1]['extra']['reasoning']) {
+        chat[chat.length - 1]['extra']['reasoning'] = '';
+    }
+
+    if (!reasoning) {
+        reasoning = '';
     }
 
     let oldMessage = '';
@@ -5877,8 +5930,11 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
             chat[chat.length - 1]['send_date'] = getMessageTimeStamp();
             chat[chat.length - 1]['extra']['api'] = getGeneratingApi();
             chat[chat.length - 1]['extra']['model'] = getGeneratingModel();
+            chat[chat.length - 1]['extra']['reasoning'] = reasoning;
+            chat[chat.length - 1]['extra']['reasoning_duration'] = null;
             if (power_user.message_token_count_enabled) {
-                chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(chat[chat.length - 1]['mes'], 0);
+                const tokenCountText = (reasoning || '') + chat[chat.length - 1]['mes'];
+                chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(tokenCountText, 0);
             }
             const chat_id = (chat.length - 1);
             await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id);
@@ -5897,8 +5953,11 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
         chat[chat.length - 1]['send_date'] = getMessageTimeStamp();
         chat[chat.length - 1]['extra']['api'] = getGeneratingApi();
         chat[chat.length - 1]['extra']['model'] = getGeneratingModel();
+        chat[chat.length - 1]['extra']['reasoning'] = reasoning;
+        chat[chat.length - 1]['extra']['reasoning_duration'] = null;
         if (power_user.message_token_count_enabled) {
-            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(chat[chat.length - 1]['mes'], 0);
+            const tokenCountText = (reasoning || '') + chat[chat.length - 1]['mes'];
+            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(tokenCountText, 0);
         }
         const chat_id = (chat.length - 1);
         await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id);
@@ -5914,8 +5973,11 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
         chat[chat.length - 1]['send_date'] = getMessageTimeStamp();
         chat[chat.length - 1]['extra']['api'] = getGeneratingApi();
         chat[chat.length - 1]['extra']['model'] = getGeneratingModel();
+        chat[chat.length - 1]['extra']['reasoning'] += reasoning;
+        // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         if (power_user.message_token_count_enabled) {
-            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(chat[chat.length - 1]['mes'], 0);
+            const tokenCountText = (reasoning || '') + chat[chat.length - 1]['mes'];
+            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(tokenCountText, 0);
         }
         const chat_id = (chat.length - 1);
         await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id);
@@ -5931,6 +5993,8 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
         chat[chat.length - 1]['send_date'] = getMessageTimeStamp();
         chat[chat.length - 1]['extra']['api'] = getGeneratingApi();
         chat[chat.length - 1]['extra']['model'] = getGeneratingModel();
+        chat[chat.length - 1]['extra']['reasoning'] = reasoning;
+        chat[chat.length - 1]['extra']['reasoning_duration'] = null;
         if (power_user.trim_spaces) {
             getMessage = getMessage.trim();
         }
@@ -5940,7 +6004,8 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
         chat[chat.length - 1]['gen_finished'] = generationFinished;
 
         if (power_user.message_token_count_enabled) {
-            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(chat[chat.length - 1]['mes'], 0);
+            const tokenCountText = (reasoning || '') + chat[chat.length - 1]['mes'];
+            chat[chat.length - 1]['extra']['token_count'] = await getTokenCountAsync(tokenCountText, 0);
         }
 
         if (selected_group) {
@@ -6005,6 +6070,19 @@ export async function saveReply(type, getMessage, fromStreaming, title, swipes) 
     return { type, getMessage };
 }
 
+export function syncCurrentSwipeInfoExtras() {
+    if (!chat.length) {
+        return;
+    }
+    const currentMessage = chat[chat.length - 1];
+    if (currentMessage && Array.isArray(currentMessage.swipe_info) && typeof currentMessage.swipe_id === 'number') {
+        const swipeInfo = currentMessage.swipe_info[currentMessage.swipe_id];
+        if (swipeInfo && typeof swipeInfo === 'object') {
+            swipeInfo.extra = structuredClone(currentMessage.extra);
+        }
+    }
+}
+
 function saveImageToMessage(img, mes) {
     if (mes && img.image) {
         if (!mes.extra || typeof mes.extra !== 'object') {
@@ -6057,20 +6135,21 @@ function extractImageFromMessage(getMessage) {
     return { getMessage, image, title };
 }
 
+/**
+ * A function mainly used to switch 'generating' state - setting it to false and activating the buttons again
+ */
 export function activateSendButtons() {
     is_send_press = false;
-    $('#send_but').removeClass('displayNone');
-    $('#mes_continue').removeClass('displayNone');
-    $('#mes_impersonate').removeClass('displayNone');
-    $('.mes_buttons:last').show();
     hideStopButton();
+    delete document.body.dataset.generating;
 }
 
+/**
+ * A function mainly used to switch 'generating' state - setting it to true and deactivating the buttons
+ */
 export function deactivateSendButtons() {
-    $('#send_but').addClass('displayNone');
-    $('#mes_continue').addClass('displayNone');
-    $('#mes_impersonate').addClass('displayNone');
     showStopButton();
+    document.body.dataset.generating = 'true';
 }
 
 export function resetChatState() {
@@ -6766,10 +6845,11 @@ export async function getSettings() {
             $('#your_name').val(name1);
         }
 
+        accountStorage.init(settings?.accountStorage);
         await setUserControls(data.enable_accounts);
 
         // Allow subscribers to mutate settings
-        eventSource.emit(event_types.SETTINGS_LOADED_BEFORE, settings);
+        await eventSource.emit(event_types.SETTINGS_LOADED_BEFORE, settings);
 
         //Load KoboldAI settings
         koboldai_setting_names = data.koboldai_setting_names;
@@ -6866,7 +6946,7 @@ export async function getSettings() {
         loadProxyPresets(settings);
 
         // Allow subscribers to mutate settings
-        eventSource.emit(event_types.SETTINGS_LOADED_AFTER, settings);
+        await eventSource.emit(event_types.SETTINGS_LOADED_AFTER, settings);
 
         // Set context size after loading power user (may override the max value)
         $('#max_context').val(max_context);
@@ -6926,7 +7006,7 @@ export async function getSettings() {
     }
     await validateDisabledSamplers();
     settingsReady = true;
-    eventSource.emit(event_types.SETTINGS_LOADED);
+    await eventSource.emit(event_types.SETTINGS_LOADED);
 }
 
 function selectKoboldGuiPreset() {
@@ -6937,7 +7017,8 @@ function selectKoboldGuiPreset() {
 
 export async function saveSettings(loopCounter = 0) {
     if (!settingsReady) {
-        console.warn('Settings not ready, aborting save');
+        console.warn('Settings not ready, scheduling another save');
+        saveSettingsDebounced();
         return;
     }
 
@@ -6958,6 +7039,7 @@ export async function saveSettings(loopCounter = 0) {
         url: '/api/settings/save',
         data: JSON.stringify({
             firstRun: firstRun,
+            accountStorage: accountStorage.getState(),
             currentVersion: currentVersion,
             username: name1,
             active_character: active_character,
@@ -7023,8 +7105,10 @@ export function setGenerationParamsFromPreset(preset) {
 // Common code for message editor done and auto-save
 function updateMessage(div) {
     const mesBlock = div.closest('.mes_block');
-    let text = mesBlock.find('.edit_textarea').val();
-    const mes = chat[this_edit_mes_id];
+    let text = mesBlock.find('.edit_textarea').val()
+        ?? mesBlock.find('.mes_text').text();
+    const mesElement = div.closest('.mes');
+    const mes = chat[mesElement.attr('mesid')];
 
     let regexPlacement;
     if (mes.is_user) {
@@ -7108,9 +7192,11 @@ function messageEditAuto(div) {
         mes.is_system,
         mes.is_user,
         this_edit_mes_id,
+        {},
+        false,
     ));
     mesBlock.find('.mes_bias').empty();
-    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1));
+    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
     saveChatDebounced();
 }
 
@@ -7132,12 +7218,19 @@ async function messageEditDone(div) {
             mes.is_system,
             mes.is_user,
             this_edit_mes_id,
+            {},
+            false,
         ),
     );
     mesBlock.find('.mes_bias').empty();
-    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1));
+    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
     appendMediaToMessage(mes, div.closest('.mes'));
     addCopyToCodeBlocks(div.closest('.mes'));
+
+    const reasoningEditDone = mesBlock.find('.mes_reasoning_edit_done:visible');
+    if (reasoningEditDone.length > 0) {
+        reasoningEditDone.trigger('click');
+    }
 
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     this_edit_mes_id = undefined;
@@ -7402,7 +7495,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
             }
 
             try {
-                const perPage = Number(localStorage.getItem('Characters_PerPage')) || per_page_default;
+                const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
                 const page = Math.floor(charIndex / perPage) + 1;
                 const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
                 $('#rm_print_characters_pagination').pagination('go', page);
@@ -7434,7 +7527,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
                 return;
             }
 
-            const perPage = Number(localStorage.getItem('Characters_PerPage')) || per_page_default;
+            const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
             const page = Math.floor(charIndex / perPage) + 1;
             $('#rm_print_characters_pagination').pagination('go', page);
             const selector = `#rm_print_characters_block [grid="${charId}"]`;
@@ -7983,9 +8076,23 @@ function updateEditArrowClasses() {
     }
 }
 
-function closeMessageEditor() {
-    if (this_edit_mes_id) {
-        $(`#chat .mes[mesid="${this_edit_mes_id}"] .mes_edit_cancel`).click();
+/**
+ * Closes the message editor.
+ * @param {'message'|'reasoning'|'all'} what What to close. Default is 'all'.
+ */
+export function closeMessageEditor(what = 'all') {
+    if (what === 'message' || what === 'all') {
+        if (this_edit_mes_id) {
+            $(`#chat .mes[mesid="${this_edit_mes_id}"] .mes_edit_cancel`).click();
+        }
+    }
+    if (what === 'reasoning' || what === 'all') {
+        document.querySelectorAll('.reasoning_edit_textarea').forEach((el) => {
+            const cancelButton = el.closest('.mes')?.querySelector('.mes_reasoning_edit_cancel');
+            if (cancelButton instanceof HTMLElement) {
+                cancelButton.click();
+            }
+        });
     }
 }
 
@@ -8418,6 +8525,9 @@ function swipe_left() {      // when we swipe left..but no generation.
         streamingProcessor.onStopStreaming();
     }
 
+    // Make sure ad-hoc changes to extras are saved before swiping away
+    syncCurrentSwipeInfoExtras();
+
     const swipe_duration = 120;
     const swipe_range = '700px';
     chat[chat.length - 1]['swipe_id']--;
@@ -8469,7 +8579,8 @@ function swipe_left() {      // when we swipe left..but no generation.
                     }
 
                     const swipeMessage = $('#chat').find(`[mesid="${chat.length - 1}"]`);
-                    const tokenCount = await getTokenCountAsync(chat[chat.length - 1].mes, 0);
+                    const tokenCountText = (chat[chat.length - 1]?.extra?.reasoning || '') + chat[chat.length - 1].mes;
+                    const tokenCount = await getTokenCountAsync(tokenCountText, 0);
                     chat[chat.length - 1]['extra']['token_count'] = tokenCount;
                     swipeMessage.find('.tokenCounterDisplay').text(`${tokenCount}t`);
                 }
@@ -8552,6 +8663,9 @@ const swipe_right = () => {
         return unblockGeneration();
     }
 
+    // Make sure ad-hoc changes to extras are saved before swiping away
+    syncCurrentSwipeInfoExtras();
+
     const swipe_duration = 200;
     const swipe_range = 700;
     //console.log(swipe_range);
@@ -8618,11 +8732,6 @@ const swipe_right = () => {
             easing: animation_easing,
             queue: false,
             complete: async function () {
-                /*if (!selected_group) {
-                    var typingIndicator = $("#typing_indicator_template .typing_indicator").clone();
-                    typingIndicator.find(".typing_indicator_name").text(characters[this_chid].name);
-                } */
-                /* $("#chat").append(typingIndicator); */
                 const is_animation_scroll = ($('#chat').scrollTop() >= ($('#chat').prop('scrollHeight') - $('#chat').outerHeight()) - 10);
                 //console.log(parseInt(chat[chat.length-1]['swipe_id']));
                 //console.log(chat[chat.length-1]['swipes'].length);
@@ -8633,6 +8742,7 @@ const swipe_right = () => {
                     // resets the timer
                     swipeMessage.find('.mes_timer').html('');
                     swipeMessage.find('.tokenCounterDisplay').text('');
+                    updateReasoningUI(swipeMessage, { reset: true });
                 } else {
                     //console.log('showing previously generated swipe candidate, or "..."');
                     //console.log('onclick right swipe calling addOneMessage');
@@ -8643,7 +8753,8 @@ const swipe_right = () => {
                             chat[chat.length - 1].extra = {};
                         }
 
-                        const tokenCount = await getTokenCountAsync(chat[chat.length - 1].mes, 0);
+                        const tokenCountText = (chat[chat.length - 1]?.extra?.reasoning || '') + chat[chat.length - 1].mes;
+                        const tokenCount = await getTokenCountAsync(tokenCountText, 0);
                         chat[chat.length - 1]['extra']['token_count'] = tokenCount;
                         swipeMessage.find('.tokenCounterDisplay').text(`${tokenCount}t`);
                     }
@@ -8681,7 +8792,6 @@ const swipe_right = () => {
                                 if (run_generate && !is_send_press && parseInt(chat[chat.length - 1]['swipe_id']) === chat[chat.length - 1]['swipes'].length) {
                                     console.debug('caught here 2');
                                     is_send_press = true;
-                                    $('.mes_buttons:last').hide();
                                     await Generate('swipe');
                                 } else {
                                     if (parseInt(chat[chat.length - 1]['swipe_id']) !== chat[chat.length - 1]['swipes'].length) {
@@ -9283,6 +9393,9 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             continue;
         }
 
+        accountStorage.removeItem(`AlertWI_${character.avatar}`);
+        accountStorage.removeItem(`AlertRegex_${character.avatar}`);
+        accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
         delete tag_map[character.avatar];
         select_rm_info('char_delete', character.name);
 
@@ -9445,7 +9558,8 @@ function addDebugFunctions() {
                 message.extra = {};
             }
 
-            message.extra.token_count = await getTokenCountAsync(message.mes, 0);
+            const tokenCountText = (message?.extra?.reasoning || '') + message.mes;
+            message.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
         }
 
         await saveChatConditional();
@@ -9484,8 +9598,8 @@ function addDebugFunctions() {
     });
 
     registerDebugFunction('toggleRegenerateWarning', 'Toggle Ctrl+Enter regeneration confirmation', 'Toggle the warning when regenerating a message with a Ctrl+Enter hotkey.', () => {
-        localStorage.setItem('RegenerateWithCtrlEnter', localStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'false' : 'true');
-        toastr.info('Regenerate warning is now ' + (localStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'disabled' : 'enabled'));
+        accountStorage.setItem('RegenerateWithCtrlEnter', accountStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'false' : 'true');
+        toastr.info('Regenerate warning is now ' + (accountStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'disabled' : 'enabled'));
     });
 
     registerDebugFunction('copySetup', 'Copy ST setup to clipboard [WIP]', 'Useful data when reporting bugs', async () => {
@@ -10629,6 +10743,12 @@ jQuery(async function () {
 
             await eventSource.emit(event_types.MESSAGE_EDIT_BEGIN, this_edit_mes_id);
 
+            // Also edit reasoning, if it exists
+            const reasoningEdit = $(this).closest('.mes_block').find('.mes_reasoning_edit:visible');
+            if (reasoningEdit.length > 0) {
+                reasoningEdit.trigger('click');
+            }
+
             var text = chat[edit_mes_id]['mes'];
             if (chat[edit_mes_id]['is_user']) {
                 this_edit_mes_chname = name1;
@@ -10756,9 +10876,16 @@ jQuery(async function () {
                 chat[this_edit_mes_id].is_system,
                 chat[this_edit_mes_id].is_user,
                 this_edit_mes_id,
+                {},
+                false,
             ));
         appendMediaToMessage(chat[this_edit_mes_id], $(this).closest('.mes'));
         addCopyToCodeBlocks($(this).closest('.mes'));
+
+        const reasoningEditDone = $(this).closest('.mes_block').find('.mes_reasoning_edit_cancel:visible');
+        if (reasoningEditDone.length > 0) {
+            reasoningEditDone.trigger('click');
+        }
 
         await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
         this_edit_mes_id = undefined;
@@ -11216,14 +11343,15 @@ jQuery(async function () {
 
     $(document).keyup(function (e) {
         if (e.key === 'Escape') {
-            const isEditVisible = $('#curEditTextarea').is(':visible');
+            const isEditVisible = $('#curEditTextarea').is(':visible') || $('.reasoning_edit_textarea').length > 0;
             if (isEditVisible && power_user.auto_save_msg_edits === false) {
-                closeMessageEditor();
+                closeMessageEditor('all');
                 $('#send_textarea').focus();
                 return;
             }
             if (isEditVisible && power_user.auto_save_msg_edits === true) {
                 $(`#chat .mes[mesid="${this_edit_mes_id}"] .mes_edit_done`).click();
+                closeMessageEditor('reasoning');
                 $('#send_textarea').focus();
                 return;
             }
@@ -11301,7 +11429,7 @@ jQuery(async function () {
                 );
                 break;*/
             default:
-                eventSource.emit('charManagementDropdown', target);
+                await eventSource.emit('charManagementDropdown', target);
         }
         $('#char-management-dropdown').prop('selectedIndex', 0);
     });
@@ -11457,13 +11585,13 @@ jQuery(async function () {
         $('#avatar-and-name-block').slideToggle();
     });
 
-    $(document).on('mouseup touchend', '#show_more_messages', () => {
-        showMoreMessages();
+    $(document).on('mouseup touchend', '#show_more_messages', async function () {
+        await showMoreMessages();
     });
 
     $(document).on('click', '.open_characters_library', async function () {
         await getCharacters();
-        eventSource.emit(event_types.OPEN_CHARACTER_LIBRARY);
+        await eventSource.emit(event_types.OPEN_CHARACTER_LIBRARY);
     });
 
     // Added here to prevent execution before script.js is loaded and get rid of quirky timeouts
