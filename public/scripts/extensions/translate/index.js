@@ -484,7 +484,7 @@ async function translate(text, lang = null, provider = null) {
         }
 
         // process '*' symbols
-        result = result.replaceAll(/[*] ?([^*]+)[*]/gs, '*$1*');
+        result = result.replaceAll(/[*] ?([^*]+?) ?[*]/gs, '*$1*');
 
         return result;
     } catch (error) {
