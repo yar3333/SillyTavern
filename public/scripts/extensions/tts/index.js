@@ -1207,8 +1207,8 @@ jQuery(async function () {
     eventSource.on(event_types.GROUP_UPDATED, onChatChanged);
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
     eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
-    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, onMessageEvent);
-    eventSource.makeLast(event_types.USER_MESSAGE_RENDERED, onMessageEvent);
+    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, (messageId) => onMessageEvent(messageId));
+    eventSource.makeLast(event_types.USER_MESSAGE_RENDERED, (messageId) => onMessageEvent(messageId));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'speak',
         callback: async (args, value) => {

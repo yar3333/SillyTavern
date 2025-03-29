@@ -4227,14 +4227,13 @@ $(document).ready(() => {
         ],
         callback: (args, value) => {
             const force = isTrueBoolean(String(args?.force ?? false));
-            value = String(value ?? '').trim();
 
             // Skip processing if no value and not forced
             if (!force && !value) {
                 return power_user.user_prompt_bias;
             }
 
-            power_user.user_prompt_bias = value;
+            power_user.user_prompt_bias = String(value ?? '');
             $('#start_reply_with').val(power_user.user_prompt_bias);
             saveSettingsDebounced();
 

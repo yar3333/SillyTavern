@@ -198,28 +198,43 @@ You will need two mandatory directory mappings and a port mapping to allow Silly
 
 ##### Volume Mappings
 
-* [config] - The directory where SillyTavern configuration files will be stored on your host machine
-* [data] - The directory where SillyTavern user data (including characters) will be stored on your host machine
-* [plugins] - (optional) The directory where SillyTavern server plugins will be stored on your host machine
-* [extensions] - (optional) The directory where global UI extensions will be stored on your host machine
+* `CONFIG_PATH` - The directory where SillyTavern configuration files will be stored on your host machine
+* `DATA_PATH` - The directory where SillyTavern user data (including characters) will be stored on your host machine
+* `PLUGINS_PATH` - (optional) The directory where SillyTavern server plugins will be stored on your host machine
+* `EXTENSIONS_PATH` - (optional) The directory where global UI extensions will be stored on your host machine
 
 ##### Port Mappings
 
-* [PublicPort] - The port to expose the traffic on. This is mandatory, as you will be accessing the instance from outside of its virtual machine container. DO NOT expose this to the internet without implementing a separate service for security.
+* `PUBLIC_PORT` - The port to expose the traffic on. This is mandatory, as you will be accessing the instance from outside of its virtual machine container. DO NOT expose this to the internet without implementing a separate service for security.
 
 ##### Additional Settings
 
-* [DockerNet] - The docker network that the container should be created with a connection to. If you don't know what it is, see the [official Docker documentation](https://docs.docker.com/reference/cli/docker/network/).
-* [version] - On the right-hand side of this GitHub page, you'll see "Packages". Select the "sillytavern" package and you'll see the image versions. The image tag "latest" will keep you up-to-date with the current release. You can also utilize "staging" and "release" tags that point to the nightly images of the respective branches, but this may not be appropriate, if you are utilizing extensions that could be broken, and may need time to update.
+* `SILLYTAVERN_VERSION` - On the right-hand side of this GitHub page, you'll see "Packages". Select the "sillytavern" package and you'll see the image versions. The image tag "latest" will keep you up-to-date with the current release. You can also utilize "staging" that points to the nightly image of the respective branch.
 
-#### Install command
+#### Running the container
 
 1. Open your Command Line
-2. Run the following command
+2. Run the following command in a folder where you want to store the configuration and data files:
 
-`docker run --name='sillytavern' --net='[DockerNet]' -p '8000:8000/tcp' -v '[plugins]':'/home/node/app/plugins':'rw' -v '[config]':'/home/node/app/config':'rw' -v '[data]':'/home/node/app/data':'rw' -v '[extensions]':'/home/node/app/public/scripts/extensions/third-party':'rw' 'ghcr.io/sillytavern/sillytavern:[version]'`
+```bash
+SILLYTAVERN_VERSION="latest"
+PUBLIC_PORT="8000"
+CONFIG_PATH="./config"
+DATA_PATH="./data"
+PLUGINS_PATH="./plugins"
+EXTENSIONS_PATH="./extensions"
 
-> Note that 8000 is a default listening port. Don't forget to use an appropriate port if you change it in the config.
+docker run \
+  --name="sillytavern" \
+  -p "$PUBLIC_PORT:8000/tcp" \
+  -v "$CONFIG_PATH:/home/node/app/config:rw" \
+  -v "$DATA_PATH:/home/node/app/data:rw" \
+  -v "$EXTENSIONS_PATH:/home/node/app/public/scripts/extensions/third-party:rw" \
+  -v "$PLUGINS_PATH:/home/node/app/plugins:rw" \
+  ghcr.io/sillytavern/sillytavern:"$SILLYTAVERN_VERSION"
+```
+
+> By default the container will run in the foreground. If you want to run it in the background, add the `-d` flag to the `docker run` command.
 
 ### Building the image yourself
 

@@ -1810,7 +1810,7 @@ async function onClickExpressionUpload(event) {
                 }
             }
         } else {
-            spriteName = withoutExtension(clickedFileName);
+            spriteName = withoutExtension(expression);
         }
 
         if (!spriteName) {

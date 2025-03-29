@@ -39,9 +39,13 @@ jobs:
 
   label-by-branches:
     name: 🏷️ Label PR by Branches
+    needs: [label-by-size]
     runs-on: ubuntu-latest
+    # Run, even if the previous jobs were skipped/failed
     # Only label once when PR is created or branches are changed, to allow manual label removal
-    if: github.event.action == 'opened' || (github.event.action == 'synchronize' && (github.event.changes.base || github.event.changes.head))
+    if: |
+      always()
+      && github.event.action == 'opened' || (github.event.action == 'synchronize' && (github.event.changes.base || github.event.changes.head))
 
     steps:
       - name: Checkout Repository
@@ -59,7 +63,10 @@ jobs:
 
   label-by-files:
     name: 🏷️ Label PR by Files
+    needs: [label-by-branches]
     runs-on: ubuntu-latest
+    # Run, even if the previous jobs were skipped/failed
+    if: always()
 
     steps:
       - name: Checkout Repository
@@ -77,9 +84,12 @@ jobs:
 
   remove-stale-label:
     name: 🗑️ Remove Stale Label on Comment
+    needs: [label-by-files]
     runs-on: ubuntu-latest
     # Only runs when this is not done by the github actions bot
-    if: github.event_name == 'pull_request_review_comment' && github.actor != 'github-actions[bot]'
+    if: |
+      always()
+      && github.event_name == 'pull_request_review_comment' && github.actor != 'github-actions[bot]'
 
     steps:
       - name: Remove Stale Label
@@ -94,7 +104,7 @@ jobs:
 
   check-merge-blocking-labels:
     name: 🚫 Check Merge Blocking Labels
-    needs: [label-by-branches, label-by-files]
+    needs: [label-by-size, label-by-branches, label-by-files, remove-stale-label]
     runs-on: ubuntu-latest
     # Run, even if the previous jobs were skipped/failed
     if: always()
@@ -144,7 +154,7 @@ jobs:
 
   write-auto-comments:
     name: 💬 Post PR Comments Based on Labels
-    needs: [label-by-size, label-by-branches, label-by-files]
+    needs: [label-by-size, label-by-branches, label-by-files, remove-stale-label]
     runs-on: ubuntu-latest
     # Run, even if the previous jobs were skipped/failed
     if: always()
