@@ -3,6 +3,28 @@ import { getConfigValue, tryParse } from './util.js';
 
 const PROMPT_PLACEHOLDER = getConfigValue('promptPlaceholder', 'Let\'s get started.');
 
+const REASONING_EFFORT = {
+    auto: 'auto',
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    min: 'min',
+    max: 'max',
+};
+
+export const PROMPT_PROCESSING_TYPE = {
+    NONE: '',
+    /** @deprecated Use MERGE instead. */
+    CLAUDE: 'claude',
+    MERGE: 'merge',
+    MERGE_TOOLS: 'merge_tools',
+    SEMI: 'semi',
+    SEMI_TOOLS: 'semi_tools',
+    STRICT: 'strict',
+    STRICT_TOOLS: 'strict_tools',
+    SINGLE: 'single',
+};
+
 /**
  * @typedef {object} PromptNames
  * @property {string} charName Character name
@@ -25,6 +47,52 @@ export function getPromptNames(request) {
             return this.groupNames.some(name => message.startsWith(`${name}: `));
         },
     };
+}
+
+/**
+ * Adds an assistant prefix to the last message.
+ * @param {any[]} prompt Prompt messages array
+ * @param {any[]} tools Array of tool definitions
+ * @returns {any[]} Transformed messages array
+ */
+export function addAssistantPrefix(prompt, tools) {
+    if (!prompt.length) {
+        return prompt;
+    }
+    const hasAnyTools = (Array.isArray(tools) && tools.length > 0) || prompt.some(x => x.role === 'tool');
+    if (!hasAnyTools && prompt[prompt.length - 1].role === 'assistant') {
+        prompt[prompt.length - 1].prefix = true;
+    }
+    return prompt;
+}
+
+/**
+ * Applies a post-processing step to the generated messages.
+ * @param {object[]} messages Messages to post-process
+ * @param {string} type Prompt conversion type
+ * @param {PromptNames} names Prompt names
+ * @returns
+ */
+export function postProcessPrompt(messages, type, names) {
+    switch (type) {
+        case PROMPT_PROCESSING_TYPE.MERGE:
+        case PROMPT_PROCESSING_TYPE.CLAUDE:
+            return mergeMessages(messages, names, { strict: false, placeholders: false, single: false, tools: false });
+        case PROMPT_PROCESSING_TYPE.MERGE_TOOLS:
+            return mergeMessages(messages, names, { strict: false, placeholders: false, single: false, tools: true });
+        case PROMPT_PROCESSING_TYPE.SEMI:
+            return mergeMessages(messages, names, { strict: true, placeholders: false, single: false, tools: false });
+        case PROMPT_PROCESSING_TYPE.SEMI_TOOLS:
+            return mergeMessages(messages, names, { strict: true, placeholders: false, single: false, tools: true });
+        case PROMPT_PROCESSING_TYPE.STRICT:
+            return mergeMessages(messages, names, { strict: true, placeholders: true, single: false, tools: false });
+        case PROMPT_PROCESSING_TYPE.STRICT_TOOLS:
+            return mergeMessages(messages, names, { strict: true, placeholders: true, single: false, tools: true });
+        case PROMPT_PROCESSING_TYPE.SINGLE:
+            return mergeMessages(messages, names, { strict: true, placeholders: false, single: true, tools: false });
+        default:
+            return messages;
+    }
 }
 
 /**
@@ -342,60 +410,20 @@ export function convertCohereMessages(messages, names) {
         }
     });
 
-    // A prompt should end with a user/tool message
-    if (messages.length && !['user', 'tool'].includes(messages[messages.length - 1].role)) {
-        messages[messages.length - 1].role = 'user';
-    }
-
     return { chatHistory: messages };
 }
 
 /**
  * Convert a prompt from the ChatML objects to the format used by Google MakerSuite models.
  * @param {object[]} messages Array of messages
- * @param {string} model Model name
+ * @param {string} _model Model name
  * @param {boolean} useSysPrompt Use system prompt
  * @param {PromptNames} names Prompt names
- * @returns {{contents: *[], system_instruction: {parts: {text: string}}}} Prompt for Google MakerSuite models
+ * @returns {{contents: *[], system_instruction: {parts: {text: string}[]}}} Prompt for Google MakerSuite models
  */
-export function convertGooglePrompt(messages, model, useSysPrompt, names) {
-    const visionSupportedModels = [
-        'gemini-2.5-pro-preview-03-25',
-        'gemini-2.5-pro-exp-03-25',
-        'gemini-2.0-pro-exp',
-        'gemini-2.0-pro-exp-02-05',
-        'gemini-2.5-flash-preview-04-17',
-        'gemini-2.0-flash-lite-preview',
-        'gemini-2.0-flash-lite-preview-02-05',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-001',
-        'gemini-2.0-flash-thinking-exp',
-        'gemini-2.0-flash-thinking-exp-01-21',
-        'gemini-2.0-flash-thinking-exp-1219',
-        'gemini-2.0-flash-exp',
-        'gemini-2.0-flash-exp-image-generation',
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002',
-        'gemini-1.5-flash-exp-0827',
-        'gemini-1.5-flash-8b',
-        'gemini-1.5-flash-8b-exp-0827',
-        'gemini-1.5-flash-8b-exp-0924',
-        'gemini-exp-1114',
-        'gemini-exp-1121',
-        'gemini-exp-1206',
-        'gemini-1.5-pro',
-        'gemini-1.5-pro-latest',
-        'gemini-1.5-pro-001',
-        'gemini-1.5-pro-002',
-        'gemini-1.5-pro-exp-0801',
-        'gemini-1.5-pro-exp-0827',
-    ];
+export function convertGooglePrompt(messages, _model, useSysPrompt, names) {
+    const sysPrompt = [];
 
-    const isMultimodal = visionSupportedModels.includes(model);
-
-    let sys_prompt = '';
     if (useSysPrompt) {
         while (messages.length > 1 && messages[0].role === 'system') {
             // Append example names if not already done by the frontend (e.g. for group chats).
@@ -409,12 +437,12 @@ export function convertGooglePrompt(messages, model, useSysPrompt, names) {
                     messages[0].content = `${names.charName}: ${messages[0].content}`;
                 }
             }
-            sys_prompt += `${messages[0].content}\n\n`;
+            sysPrompt.push(messages[0].content);
             messages.shift();
         }
     }
 
-    const system_instruction = { parts: [{ text: sys_prompt.trim() }] };
+    const system_instruction = { parts: sysPrompt.map(text => ({ text })) };
     const toolNameMap = {};
 
     const contents = [];
@@ -493,7 +521,7 @@ export function convertGooglePrompt(messages, model, useSysPrompt, names) {
 
                     toolNameMap[toolCall.id] = toolCall.function.name;
                 });
-            } else if (part.type === 'image_url' && isMultimodal) {
+            } else if (part.type === 'image_url') {
                 const mimeType = part.image_url.url.split(';')[0].split(':')[1];
                 const base64Data = part.image_url.url.split(',')[1];
                 parts.push({
@@ -502,6 +530,19 @@ export function convertGooglePrompt(messages, model, useSysPrompt, names) {
                         data: base64Data,
                     },
                 });
+            } else if (part.type === 'video_url') {
+                const videoUrl = part.video_url?.url;
+                if (videoUrl && videoUrl.startsWith('data:')) {
+                    const [header, data] = videoUrl.split(',');
+                    const mimeType = header.match(/data:([^;]+)/)?.[1] || 'video/mp4';
+
+                    parts.push({
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: data,
+                        },
+                    });
+                }
             }
         });
 
@@ -726,11 +767,14 @@ export function convertXAIMessages(messages, names) {
  * Merge messages with the same consecutive role, removing names if they exist.
  * @param {any[]} messages Messages to merge
  * @param {PromptNames} names Prompt names
- * @param {boolean} strict Enable strict mode: only allow one system message at the start, force user first message
- * @param {boolean} placeholders Add user placeholders to the messages in strict mode
+ * @param {object} options Options for merging
+ * @param {boolean} [options.strict] Enable strict mode: only allow one system message at the start, force user first message
+ * @param {boolean} [options.placeholders] Add user placeholders to the messages in strict mode
+ * @param {boolean} [options.single] Force every role to be user, merging all messages into one
+ * @param {boolean} [options.tools] Allow tool calls in the prompt. If false, tool call messages are removed.
  * @returns {any[]} Merged messages
  */
-export function mergeMessages(messages, names, strict, placeholders) {
+export function mergeMessages(messages, names, { strict = false, placeholders = false, single = false, tools = false } = {}) {
     let mergedMessages = [];
 
     /** @type {Map<string,object>} */
@@ -772,17 +816,33 @@ export function mergeMessages(messages, names, strict, placeholders) {
                 message.content = `${message.name}: ${message.content}`;
             }
         }
-        if (message.role === 'tool') {
+        if (message.role === 'tool' && !tools) {
+            message.role = 'user';
+        }
+        if (single) {
+            if (message.role === 'assistant') {
+                if (names.charName && !message.content.startsWith(`${names.charName}: `) && !names.startsWithGroupName(message.content)) {
+                    message.content = `${names.charName}: ${message.content}`;
+                }
+            }
+            if (message.role === 'user') {
+                if (names.userName && !message.content.startsWith(`${names.userName}: `)) {
+                    message.content = `${names.userName}: ${message.content}`;
+                }
+            }
+
             message.role = 'user';
         }
         delete message.name;
-        delete message.tool_calls;
-        delete message.tool_call_id;
+        if (!tools) {
+            delete message.tool_calls;
+            delete message.tool_call_id;
+        }
     });
 
     // Squash consecutive messages with the same role
     messages.forEach((message) => {
-        if (mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === message.role && message.content) {
+        if (mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === message.role && message.content && message.role !== 'tool') {
             mergedMessages[mergedMessages.length - 1].content += '\n\n' + message.content;
         } else {
             mergedMessages.push(message);
@@ -838,7 +898,7 @@ export function mergeMessages(messages, names, strict, placeholders) {
                 mergedMessages.unshift({ role: 'user', content: PROMPT_PLACEHOLDER });
             }
         }
-        return mergeMessages(mergedMessages, names, false, placeholders);
+        return mergeMessages(mergedMessages, names, { strict: false, placeholders, single: false, tools });
     }
 
     return mergedMessages;
@@ -869,7 +929,13 @@ export function convertTextCompletionPrompt(messages) {
     return messageStrings.join('\n') + '\nassistant:';
 }
 
-export function cachingAtDepthForClaude(messages, cachingAtDepth) {
+/**
+ * Append cache_control object to a Claude messages at depth. Directly modifies the messages array.
+ * @param {any[]} messages Messages to modify
+ * @param {number} cachingAtDepth Depth at which caching is supposed to occur
+ * @param {string} ttl TTL value
+ */
+export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
     let passedThePrefill = false;
     let depth = 0;
     let previousRoleName = '';
@@ -884,7 +950,7 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth) {
         if (messages[i].role !== previousRoleName) {
             if (depth === cachingAtDepth || depth === cachingAtDepth + 2) {
                 const content = messages[i].content;
-                content[content.length - 1].cache_control = { type: 'ephemeral' };
+                content[content.length - 1].cache_control = { type: 'ephemeral', ttl: ttl };
             }
 
             if (depth === cachingAtDepth + 2) {
@@ -902,8 +968,9 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth) {
  * messages array.
  * @param {object[]} messages Array of messages
  * @param {number} cachingAtDepth Depth at which caching is supposed to occur
+ * @param {string} ttl TTL value
  */
-export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
+export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth, ttl) {
     //caching the prefill is a terrible idea in general
     let passedThePrefill = false;
     //depth here is the number of message role switches
@@ -923,12 +990,13 @@ export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
                     messages[i].content = [{
                         type: 'text',
                         text: content,
-                        cache_control: { type: 'ephemeral' },
+                        cache_control: { type: 'ephemeral', ttl: ttl },
                     }];
                 } else {
                     const contentPartCount = content.length;
                     content[contentPartCount - 1].cache_control = {
                         type: 'ephemeral',
+                        ttl: ttl,
                     };
                 }
             }
@@ -944,24 +1012,32 @@ export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
 }
 
 /**
- * Calculate the budget tokens for a given reasoning effort.
+ * Calculate the Claude budget tokens for a given reasoning effort.
  * @param {number} maxTokens Maximum tokens
  * @param {string} reasoningEffort Reasoning effort
  * @param {boolean} stream If streaming is enabled
- * @returns {number} Budget tokens
+ * @returns {number?} Budget tokens
  */
-export function calculateBudgetTokens(maxTokens, reasoningEffort, stream) {
+export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream) {
     let budgetTokens = 0;
 
     switch (reasoningEffort) {
-        case 'low':
+        case REASONING_EFFORT.auto:
+            return null;
+        case REASONING_EFFORT.min:
+            budgetTokens = 1024;
+            break;
+        case REASONING_EFFORT.low:
             budgetTokens = Math.floor(maxTokens * 0.1);
             break;
-        case 'medium':
+        case REASONING_EFFORT.medium:
             budgetTokens = Math.floor(maxTokens * 0.25);
             break;
-        case 'high':
+        case REASONING_EFFORT.high:
             budgetTokens = Math.floor(maxTokens * 0.5);
+            break;
+        case REASONING_EFFORT.max:
+            budgetTokens = Math.floor(maxTokens * 0.95);
             break;
     }
 
@@ -972,4 +1048,109 @@ export function calculateBudgetTokens(maxTokens, reasoningEffort, stream) {
     }
 
     return budgetTokens;
+}
+
+/**
+ * Calculate the Google budget tokens for a given reasoning effort.
+ * @param {number} maxTokens Maximum tokens
+ * @param {string} reasoningEffort Reasoning effort
+ * @param {string} model Model name
+ * @returns {number?} Budget tokens
+ */
+export function calculateGoogleBudgetTokens(maxTokens, reasoningEffort, model) {
+    function getFlashBudget() {
+        let budgetTokens = 0;
+
+        switch (reasoningEffort) {
+            case REASONING_EFFORT.auto:
+                return -1;
+            case REASONING_EFFORT.min:
+                return 0;
+            case REASONING_EFFORT.low:
+                budgetTokens = Math.floor(maxTokens * 0.1);
+                break;
+            case REASONING_EFFORT.medium:
+                budgetTokens = Math.floor(maxTokens * 0.25);
+                break;
+            case REASONING_EFFORT.high:
+                budgetTokens = Math.floor(maxTokens * 0.5);
+                break;
+            case REASONING_EFFORT.max:
+                budgetTokens = maxTokens;
+                break;
+        }
+
+        budgetTokens = Math.min(budgetTokens, 24576);
+
+        return budgetTokens;
+    }
+
+    function getFlashLiteBudget() {
+        let budgetTokens = 0;
+
+        switch (reasoningEffort) {
+            case REASONING_EFFORT.auto:
+                return -1;
+            case REASONING_EFFORT.min:
+                return 0;
+            case REASONING_EFFORT.low:
+                budgetTokens = Math.floor(maxTokens * 0.1);
+                break;
+            case REASONING_EFFORT.medium:
+                budgetTokens = Math.floor(maxTokens * 0.25);
+                break;
+            case REASONING_EFFORT.high:
+                budgetTokens = Math.floor(maxTokens * 0.5);
+                break;
+            case REASONING_EFFORT.max:
+                budgetTokens = maxTokens;
+                break;
+        }
+
+        budgetTokens = Math.max(Math.min(budgetTokens, 24576), 512);
+
+        return budgetTokens;
+    }
+
+    function getProBudget() {
+        let budgetTokens = 0;
+
+        switch (reasoningEffort) {
+            case REASONING_EFFORT.auto:
+                return -1;
+            case REASONING_EFFORT.min:
+                budgetTokens = 128;
+                break;
+            case REASONING_EFFORT.low:
+                budgetTokens = Math.floor(maxTokens * 0.1);
+                break;
+            case REASONING_EFFORT.medium:
+                budgetTokens = Math.floor(maxTokens * 0.25);
+                break;
+            case REASONING_EFFORT.high:
+                budgetTokens = Math.floor(maxTokens * 0.5);
+                break;
+            case REASONING_EFFORT.max:
+                budgetTokens = maxTokens;
+                break;
+        }
+
+        budgetTokens = Math.max(Math.min(budgetTokens, 32768), 128);
+
+        return budgetTokens;
+    }
+
+    if (model.includes('flash-lite')) {
+        return getFlashLiteBudget();
+    }
+
+    if (model.includes('flash')) {
+        return getFlashBudget();
+    }
+
+    if (model.includes('pro')) {
+        return getProBudget();
+    }
+
+    return null;
 }

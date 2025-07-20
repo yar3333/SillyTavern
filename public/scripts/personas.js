@@ -22,7 +22,7 @@ import {
 } from '../script.js';
 import { persona_description_positions, power_user } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { PAGINATION_TEMPLATE, clearInfoBlock, debounce, delay, download, ensureImageFormatSupported, flashHighlight, getBase64Async, getCharIndex, isFalseBoolean, isTrueBoolean, onlyUnique, parseJsonFile, setInfoBlock } from './utils.js';
+import { PAGINATION_TEMPLATE, clearInfoBlock, debounce, delay, download, ensureImageFormatSupported, flashHighlight, getBase64Async, getCharIndex, isFalseBoolean, isTrueBoolean, onlyUnique, parseJsonFile, setInfoBlock, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { groups, selected_group } from './group-chats.js';
@@ -132,7 +132,7 @@ function reloadUserAvatar(force = false) {
 /**
  * Sort the given personas
  * @param {string[]} personas - The persona names to sort
- * @returns {string[]} The sorted persona names arrray, same reference as passed in
+ * @returns {string[]} The sorted persona names array, same reference as passed in
  */
 function sortPersonas(personas) {
     const option = $('#persona_sort_order').find(':selected');
@@ -250,16 +250,18 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         const storageKey = 'Personas_PerPage';
         const listId = '#user_avatar_block';
         const perPage = Number(accountStorage.getItem(storageKey)) || 5;
+        const sizeChangerOptions = [5, 10, 25, 50, 100, 250, 500, 1000];
 
         $('#persona_pagination_container').pagination({
             dataSource: entities,
             pageSize: perPage,
-            sizeChangerOptions: [5, 10, 25, 50, 100, 250, 500, 1000],
+            sizeChangerOptions,
             pageRange: 1,
             pageNumber: savePersonasPage || 1,
             position: 'top',
             showPageNumbers: false,
             showSizeChanger: true,
+            formatSizeChanger: renderPaginationDropdown(perPage, sizeChangerOptions),
             prevText: '<',
             nextText: '>',
             formatNavigator: PAGINATION_TEMPLATE,
@@ -270,9 +272,11 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
                     $(listId).append(getUserAvatarBlock(item));
                 }
                 updatePersonaUIStates();
+                localizePagination($('#persona_pagination_container'));
             },
-            afterSizeSelectorChange: function (e) {
+            afterSizeSelectorChange: function (e, size) {
                 accountStorage.setItem(storageKey, e.target.value);
+                paginationDropdownChangeHandler(e, size);
             },
             afterPaging: function (e) {
                 savePersonasPage = e;
@@ -1003,7 +1007,9 @@ async function deleteUserAvatar() {
         console.warn('No avatar id found');
         return;
     }
-    const confirm = await Popup.show.confirm(t`Delete Persona`,
+    const name = power_user.personas[avatarId] || '';
+    const confirm = await Popup.show.confirm(
+        t`Delete Persona` + `: ${name}`,
         t`Are you sure you want to delete this avatar?` + '<br />' + t`All information associated with its linked persona will be lost.`);
 
     if (!confirm) {
@@ -1817,7 +1823,7 @@ function registerPersonaSlashCommands() {
                 defaultValue: 'chat',
                 enumList: [
                     new SlashCommandEnumValue('chat', 'Lock the persona to the current chat.'),
-                    new SlashCommandEnumValue('character', 'Lock this persona to the currently selected character. If the setting is enabled, mutliple personas can be locked to the same character.'),
+                    new SlashCommandEnumValue('character', 'Lock this persona to the currently selected character. If the setting is enabled, multiple personas can be locked to the same character.'),
                     new SlashCommandEnumValue('default', 'Lock this persona as the default persona for all new chats.'),
                 ],
             }),
@@ -1853,7 +1859,7 @@ function registerPersonaSlashCommands() {
                 defaultValue: 'chat',
                 enumList: [
                     new SlashCommandEnumValue('chat', 'Lock the persona to the current chat.'),
-                    new SlashCommandEnumValue('character', 'Lock this persona to the currently selected character. If the setting is enabled, mutliple personas can be locked to the same character.'),
+                    new SlashCommandEnumValue('character', 'Lock this persona to the currently selected character. If the setting is enabled, multiple personas can be locked to the same character.'),
                     new SlashCommandEnumValue('default', 'Lock this persona as the default persona for all new chats.'),
                 ],
             }),
@@ -1966,7 +1972,7 @@ export async function initPersonas() {
 
     $('#char_connections_button').on('click', showCharConnections);
 
-    eventSource.on('charManagementDropdown', (target) => {
+    eventSource.on(event_types.CHARACTER_MANAGEMENT_DROPDOWN, (target) => {
         if (target === 'convert_to_persona') {
             convertCharacterToPersona();
         }

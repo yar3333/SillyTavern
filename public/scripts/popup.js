@@ -1,6 +1,6 @@
 import dialogPolyfill from '../lib/dialog-polyfill.esm.js';
 import { shouldSendOnEnter } from './RossAscends-mods.js';
-import { power_user } from './power-user.js';
+import { power_user, toastPositionClasses } from './power-user.js';
 import { removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
 
 /** @readonly */
@@ -53,6 +53,7 @@ export const POPUP_RESULT = {
  * @property {CustomPopupInput[]?} [customInputs=null] - Custom inputs to add to the popup. The display below the content and the input box, one by one.
  * @property {(popup: Popup) => Promise<boolean?>|boolean?} [onClosing=null] - Handler called before the popup closes, return `false` to cancel the close
  * @property {(popup: Popup) => Promise<void?>|void?} [onClose=null] - Handler called after the popup closes, but before the DOM is cleaned up
+ * @property {(popup: Popup) => Promise<void?>|void?} [onOpen=null] - Handler called after the popup opens
  * @property {number?} [cropAspect=null] - Aspect ratio for the crop popup
  * @property {string?} [cropImage=null] - Image URL to display in the crop popup
  */
@@ -71,7 +72,8 @@ export const POPUP_RESULT = {
  * @property {string} id - The id for the html element
  * @property {string} label - The label text for the input
  * @property {string?} [tooltip=null] - Optional tooltip icon displayed behind the label
- * @property {boolean?} [defaultState=false] - The default state when opening the popup (false if not set)
+ * @property {boolean|string|undefined} [defaultState=false] - The default state when opening the popup (false if not set)
+ * @property {string?} [type='checkbox'] - The type of the input (default is checkbox)
  */
 
 /**
@@ -154,10 +156,11 @@ export class Popup {
 
     /** @type {(popup: Popup) => Promise<boolean?>|boolean?} */ onClosing;
     /** @type {(popup: Popup) => Promise<void?>|void?} */ onClose;
+    /** @type {(popup: Popup) => Promise<void?>|void?} */ onOpen;
 
     /** @type {POPUP_RESULT|number} */ result;
     /** @type {any} */ value;
-    /** @type {Map<string,boolean>?} */ inputResults;
+    /** @type {Map<string,string|boolean>?} */ inputResults;
     /** @type {any} */ cropData;
 
     /** @type {HTMLElement} */ lastFocus;
@@ -174,7 +177,7 @@ export class Popup {
      * @param {string} [inputValue=''] - The initial value of the input field
      * @param {PopupOptions} [options={}] - Additional options for the popup
      */
-    constructor(content, type, inputValue = '', { okButton = null, cancelButton = null, rows = 1, wide = false, wider = false, large = false, transparent = false, allowHorizontalScrolling = false, allowVerticalScrolling = false, leftAlign = false, animation = 'fast', defaultResult = POPUP_RESULT.AFFIRMATIVE, customButtons = null, customInputs = null, onClosing = null, onClose = null, cropAspect = null, cropImage = null } = {}) {
+    constructor(content, type, inputValue = '', { okButton = null, cancelButton = null, rows = 1, wide = false, wider = false, large = false, transparent = false, allowHorizontalScrolling = false, allowVerticalScrolling = false, leftAlign = false, animation = 'fast', defaultResult = POPUP_RESULT.AFFIRMATIVE, customButtons = null, customInputs = null, onClosing = null, onClose = null, onOpen = null, cropAspect = null, cropImage = null } = {}) {
         Popup.util.popups.push(this);
 
         // Make this popup uniquely identifiable
@@ -184,6 +187,7 @@ export class Popup {
         // Utilize event handlers being passed in
         this.onClosing = onClosing;
         this.onClose = onClose;
+        this.onOpen = onOpen;
 
         /**@type {HTMLTemplateElement}*/
         const template = document.querySelector('#popup_template');
@@ -260,28 +264,53 @@ export class Popup {
                 return;
             }
 
-            const label = document.createElement('label');
-            label.classList.add('checkbox_label', 'justifyCenter');
-            label.setAttribute('for', input.id);
-            const inputElement = document.createElement('input');
-            inputElement.type = 'checkbox';
-            inputElement.id = input.id;
-            inputElement.checked = input.defaultState ?? false;
-            label.appendChild(inputElement);
-            const labelText = document.createElement('span');
-            labelText.innerText = input.label;
-            labelText.dataset.i18n = input.label;
-            label.appendChild(labelText);
+            if (!input.type || input.type === 'checkbox') {
+                const label = document.createElement('label');
+                label.classList.add('checkbox_label', 'justifyCenter');
+                label.setAttribute('for', input.id);
+                const inputElement = document.createElement('input');
+                inputElement.type = 'checkbox';
+                inputElement.id = input.id;
+                inputElement.checked = Boolean(input.defaultState ?? false);
+                label.appendChild(inputElement);
+                const labelText = document.createElement('span');
+                labelText.innerText = input.label;
+                labelText.dataset.i18n = input.label;
+                label.appendChild(labelText);
 
-            if (input.tooltip) {
-                const tooltip = document.createElement('div');
-                tooltip.classList.add('fa-solid', 'fa-circle-info', 'opacity50p');
-                tooltip.title = input.tooltip;
-                tooltip.dataset.i18n = '[title]' + input.tooltip;
-                label.appendChild(tooltip);
+                if (input.tooltip) {
+                    const tooltip = document.createElement('div');
+                    tooltip.classList.add('fa-solid', 'fa-circle-info', 'opacity50p');
+                    tooltip.title = input.tooltip;
+                    tooltip.dataset.i18n = '[title]' + input.tooltip;
+                    label.appendChild(tooltip);
+                }
+
+                this.inputControls.appendChild(label);
+            } else if (input.type === 'text') {
+                const label = document.createElement('label');
+                label.classList.add('text_label', 'justifyCenter');
+                label.setAttribute('for', input.id);
+
+                const inputElement = document.createElement('input');
+                inputElement.classList.add('text_pole');
+                inputElement.type = 'text';
+                inputElement.id = input.id;
+                inputElement.value = String(input.defaultState ?? '');
+                inputElement.placeholder = input.tooltip ?? '';
+
+                const labelText = document.createElement('span');
+                labelText.innerText = input.label;
+                labelText.dataset.i18n = input.label;
+
+                label.appendChild(labelText);
+                label.appendChild(inputElement);
+
+                this.inputControls.appendChild(label);
+            } else {
+                console.warn('Unknown custom input type. Only checkbox and text are supported.', input);
+                return;
             }
-
-            this.inputControls.appendChild(label);
         });
 
         // Set the default button class
@@ -289,7 +318,7 @@ export class Popup {
         if (defaultButton) defaultButton.classList.add('menu_button_default');
 
         // Styling differences depending on the popup type
-        // General styling for all types first, that might be overriden for specific types below
+        // General styling for all types first, that might be overridden for specific types below
         this.mainInput.style.display = 'none';
         this.inputControls.style.display = customInputs ? 'block' : 'none';
         this.closeButton.style.display = 'none';
@@ -452,6 +481,11 @@ export class Popup {
 
         runAfterAnimation(this.dlg, () => {
             this.dlg.removeAttribute('opening');
+
+            // If we have an onOpen handler, we run it now
+            if (this.onOpen) {
+                this.onOpen(this);
+            }
         });
 
         this.#promise = new Promise((resolve) => {
@@ -529,7 +563,8 @@ export class Popup {
             this.inputResults = new Map(this.customInputs.map(input => {
                 /** @type {HTMLInputElement} */
                 const inputControl = this.dlg.querySelector(`#${input.id}`);
-                return [inputControl.id, inputControl.checked];
+                const value = input.type === 'text' ? inputControl.value : inputControl.checked;
+                return [inputControl.id, value];
             }));
         }
 
@@ -619,7 +654,7 @@ export class Popup {
         /** @readonly @type {Popup[]} Remember all popups */
         popups: [],
 
-        /** @type {{value: any, result: POPUP_RESULT|number?, inputResults: Map<string, boolean>?}?} Last popup result */
+        /** @type {{value: any, result: POPUP_RESULT|number?, inputResults: Map<string, string|boolean>?}?} Last popup result */
         lastResult: null,
 
         /** @returns {boolean} Checks if any modal popup dialog is open */
@@ -691,7 +726,6 @@ export function getTopmostModalLayer() {
  */
 export function fixToastrForDialogs() {
     // Hacky way of getting toastr to actually display on top of the popup...
-
     const dlg = Array.from(document.querySelectorAll('dialog[open]:not([closing])')).pop();
 
     let toastContainer = document.getElementById('toast-container');
@@ -718,7 +752,8 @@ export function fixToastrForDialogs() {
             toastContainer.remove();
         } else {
             document.body.appendChild(toastContainer);
-            toastContainer.classList.add('toast-top-center');
+            toastContainer.classList.remove(...toastPositionClasses);
+            toastContainer.classList.add(toastr.options.positionClass);
         }
     }
 }

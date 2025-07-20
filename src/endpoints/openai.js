@@ -8,7 +8,7 @@ import express from 'express';
 import { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1 } from '../util.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
-import { OPENROUTER_HEADERS } from '../constants.js';
+import { AIMLAPI_HEADERS, OPENROUTER_HEADERS } from '../constants.js';
 
 export const router = express.Router();
 
@@ -22,8 +22,12 @@ router.post('/caption-image', async (request, response) => {
             key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
         }
 
-        if (request.body.api === 'openrouter' && !request.body.reverse_proxy) {
-            key = readSecret(request.user.directories, SECRET_KEYS.OPENROUTER);
+        if (request.body.api === 'xai' && !request.body.reverse_proxy) {
+            key = readSecret(request.user.directories, SECRET_KEYS.XAI);
+        }
+
+        if (request.body.api === 'mistral' && !request.body.reverse_proxy) {
+            key = readSecret(request.user.directories, SECRET_KEYS.MISTRALAI);
         }
 
         if (request.body.reverse_proxy && request.body.proxy_password) {
@@ -36,6 +40,10 @@ router.post('/caption-image', async (request, response) => {
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
         }
 
+        if (request.body.api === 'openrouter') {
+            key = readSecret(request.user.directories, SECRET_KEYS.OPENROUTER);
+        }
+
         if (request.body.api === 'ooba') {
             key = readSecret(request.user.directories, SECRET_KEYS.OOBA);
             bodyParams.temperature = 0.1;
@@ -43,6 +51,10 @@ router.post('/caption-image', async (request, response) => {
 
         if (request.body.api === 'koboldcpp') {
             key = readSecret(request.user.directories, SECRET_KEYS.KOBOLDCPP);
+        }
+
+        if (request.body.api === 'llamacpp') {
+            key = readSecret(request.user.directories, SECRET_KEYS.LLAMACPP);
         }
 
         if (request.body.api === 'vllm') {
@@ -53,8 +65,8 @@ router.post('/caption-image', async (request, response) => {
             key = readSecret(request.user.directories, SECRET_KEYS.ZEROONEAI);
         }
 
-        if (request.body.api === 'mistral') {
-            key = readSecret(request.user.directories, SECRET_KEYS.MISTRALAI);
+        if (request.body.api === 'aimlapi') {
+            key = readSecret(request.user.directories, SECRET_KEYS.AIMLAPI);
         }
 
         if (request.body.api === 'groq') {
@@ -65,11 +77,8 @@ router.post('/caption-image', async (request, response) => {
             key = readSecret(request.user.directories, SECRET_KEYS.COHERE);
         }
 
-        if (request.body.api === 'xai') {
-            key = readSecret(request.user.directories, SECRET_KEYS.XAI);
-        }
-
-        if (!key && !request.body.reverse_proxy && ['custom', 'ooba', 'koboldcpp', 'vllm'].includes(request.body.api) === false) {
+        const noKeyTypes = ['custom', 'ooba', 'koboldcpp', 'vllm', 'llamacpp', 'pollinations'];
+        if (!key && !request.body.reverse_proxy && !noKeyTypes.includes(request.body.api)) {
             console.warn('No key found for API', request.body.api);
             return response.sendStatus(400);
         }
@@ -123,6 +132,11 @@ router.post('/caption-image', async (request, response) => {
             apiUrl = 'https://api.lingyiwanwu.com/v1/chat/completions';
         }
 
+        if (request.body.api === 'aimlapi') {
+            apiUrl = 'https://api.aimlapi.com/v1/chat/completions';
+            Object.assign(headers, AIMLAPI_HEADERS);
+        }
+
         if (request.body.api === 'groq') {
             apiUrl = 'https://api.groq.com/openai/v1/chat/completions';
             if (body.messages?.[0]?.role === 'system') {
@@ -142,8 +156,16 @@ router.post('/caption-image', async (request, response) => {
             apiUrl = 'https://api.x.ai/v1/chat/completions';
         }
 
-        if (request.body.api === 'ooba') {
+        if (request.body.api === 'pollinations') {
+            headers = { Authorization: '' };
+            apiUrl = 'https://text.pollinations.ai/openai/chat/completions';
+        }
+
+        if (['koboldcpp', 'vllm', 'llamacpp', 'ooba'].includes(request.body.api)) {
             apiUrl = `${trimV1(request.body.server_url)}/v1/chat/completions`;
+        }
+
+        if (request.body.api === 'ooba') {
             const imgMessage = body.messages.pop();
             body.messages.push({
                 role: 'user',
@@ -154,10 +176,6 @@ router.post('/caption-image', async (request, response) => {
                 content: [],
                 image_url: imgMessage?.content?.[1]?.image_url?.url,
             });
-        }
-
-        if (request.body.api === 'koboldcpp' || request.body.api === 'vllm') {
-            apiUrl = `${trimV1(request.body.server_url)}/v1/chat/completions`;
         }
 
         setAdditionalHeaders(request, { headers }, apiUrl);
@@ -234,7 +252,7 @@ router.post('/transcribe-audio', async (request, response) => {
             return response.status(500).send(text);
         }
 
-        fs.rmSync(request.file.path);
+        fs.unlinkSync(request.file.path);
         const data = await result.json();
         console.debug('OpenAI transcription response', data);
         return response.json(data);

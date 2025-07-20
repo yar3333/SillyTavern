@@ -53,11 +53,11 @@ function filterAssets() {
 }
 
 const KNOWN_TYPES = {
-    'extension': 'Extensions',
-    'character': 'Characters',
-    'ambient': 'Ambient sounds',
-    'bgm': 'Background music',
-    'blip': 'Blip sounds',
+    'extension': t`Extensions`,
+    'character': t`Characters`,
+    'ambient': t`Ambient sounds`,
+    'bgm': t`Background music`,
+    'blip': t`Blip sounds`,
 };
 
 async function downloadAssetsList(url) {
@@ -291,7 +291,7 @@ async function installAsset(url, assetType, filename) {
     try {
         if (category === 'extension') {
             console.debug(DEBUG_PREFIX, 'Installing extension ', url);
-            await installExtension(url);
+            await installExtension(url, false);
             console.debug(DEBUG_PREFIX, 'Extension installed.');
             return;
         }
@@ -309,7 +309,7 @@ async function installAsset(url, assetType, filename) {
                 console.debug(DEBUG_PREFIX, 'Importing character ', filename);
                 const blob = await result.blob();
                 const file = new File([blob], filename, { type: blob.type });
-                await processDroppedFiles([file], true);
+                await processDroppedFiles([file]);
                 console.debug(DEBUG_PREFIX, 'Character downloaded.');
             }
         }

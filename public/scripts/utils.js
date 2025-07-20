@@ -20,7 +20,46 @@ import { getCurrentLocale, t } from './i18n.js';
  * Pagination status string template.
  * @type {string}
  */
-export const PAGINATION_TEMPLATE = '<%= rangeStart %>-<%= rangeEnd %> of <%= totalNumber %>';
+export const PAGINATION_TEMPLATE = '<%= rangeStart %>-<%= rangeEnd %> .. <%= totalNumber %>';
+
+export const localizePagination = function(container) {
+    container.find('[title="Next page"]').attr('title', t`Next page`);
+    container.find('[title="Previous page"]').attr('title', t`Previous page`);
+};
+
+/**
+ * Renders a dropdown for selecting page size in pagination.
+ * @param {number} pageSize Page size
+ * @param {number[]} sizeChangerOptions Array of page size options
+ * @returns {string} The rendered dropdown element as a string
+ */
+export const renderPaginationDropdown = function(pageSize, sizeChangerOptions) {
+    const sizeSelect = document.createElement('select');
+    sizeSelect.classList.add('J-paginationjs-size-select');
+
+    if (sizeChangerOptions.indexOf(pageSize) === -1) {
+        sizeChangerOptions.unshift(pageSize);
+        sizeChangerOptions.sort((a, b) => a - b);
+    }
+
+    for (let i = 0; i < sizeChangerOptions.length; i++) {
+        const option = document.createElement('option');
+        option.value = `${sizeChangerOptions[i]}`;
+        option.textContent = `${sizeChangerOptions[i]} ${t`/ page`}`;
+        if (sizeChangerOptions[i] === pageSize) {
+            option.setAttribute('selected', 'selected');
+        }
+        sizeSelect.appendChild(option);
+    }
+
+    return sizeSelect.outerHTML;
+};
+
+export const paginationDropdownChangeHandler = function(event, size) {
+    let dropdown = $(event?.originalEvent?.currentTarget || event.delegateTarget).find('select');
+    dropdown.find('[selected]').removeAttr('selected');
+    dropdown.find(`[value=${size}]`).attr('selected', '');
+};
 
 /**
  * Navigation options for pagination.
@@ -84,6 +123,17 @@ export function isValidUrl(value) {
     } catch (_) {
         return false;
     }
+}
+
+/**
+ * Checks if a string is a valid UUID (version 1-5).
+ * @param {string} value String to check
+ * @returns {boolean} True if the string is a valid UUID, false otherwise.
+ */
+export function isUuid(value) {
+    // Regular expression to match UUIDs
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(value);
 }
 
 /**
@@ -943,6 +993,11 @@ function parseTimestamp(timestamp) {
         return new Date(unixTime).toISOString();
     }
 
+    // ISO 8601
+    if (moment(timestamp, moment.ISO_8601, true).isValid()) {
+        return timestamp;
+    }
+
     let dtFmt = [];
 
     // meridiem-based format
@@ -969,6 +1024,7 @@ function parseTimestamp(timestamp) {
         if (!rgxMatch) continue;
         return x.callback(...rgxMatch);
     }
+
     return;
 }
 
@@ -1047,7 +1103,7 @@ export function getImageSizeFromDataURL(dataUrl) {
 
 /**
  * Gets the filename of the character avatar without extension
- * @param {number?} [chid=null] - Character ID. If not provided, uses the current character ID
+ * @param {string|number?} [chid=null] - Character ID. If not provided, uses the current character ID
  * @param {object} [options={}] - Options arguments
  * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the chid to determine the name
  * @returns {string?} The filename of the character avatar without extension, or null if the character ID is invalid
@@ -2108,19 +2164,26 @@ export function getFreeName(name, list, numberFormatter = (n) => ` #${n}`) {
  */
 export function toggleDrawer(drawer, expand = true) {
     /** @type {HTMLElement} */
-    const icon = drawer.querySelector('.inline-drawer-icon');
+    const icon = drawer.querySelector(':scope > .inline-drawer-header .inline-drawer-icon');
     /** @type {HTMLElement} */
-    const content = drawer.querySelector('.inline-drawer-content');
+    const content = drawer.querySelector(':scope > .inline-drawer-content');
+
+    if (!icon || !content) {
+        console.debug('toggleDrawer: No icon or content found in the drawer element.');
+        return;
+    }
 
     if (expand) {
-        icon.classList.remove('up', 'fa-circle-chevron-up');
-        icon.classList.add('down', 'fa-circle-chevron-down');
-        content.style.display = 'block';
-    } else {
         icon.classList.remove('down', 'fa-circle-chevron-down');
         icon.classList.add('up', 'fa-circle-chevron-up');
+        content.style.display = 'block';
+    } else {
+        icon.classList.remove('up', 'fa-circle-chevron-up');
+        icon.classList.add('down', 'fa-circle-chevron-down');
         content.style.display = 'none';
     }
+
+    drawer.dispatchEvent(new CustomEvent('inline-drawer-toggle', { bubbles: true }));
 
     // Set the height of "autoSetHeight" textareas within the inline-drawer to their scroll height
     if (!CSS.supports('field-sizing', 'content')) {
@@ -2304,7 +2367,7 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
 
     // If allowAvatar is true, search by avatar first
     if (allowAvatar && name) {
-        const characterByAvatar = filteredCharacters.find(char => char.avatar === name);
+        const characterByAvatar = filteredCharacters.find(char => char.avatar === name || (!name.endsWith('.png') && char.avatar === `${name}.png`));
         if (characterByAvatar) {
             return characterByAvatar;
         }
