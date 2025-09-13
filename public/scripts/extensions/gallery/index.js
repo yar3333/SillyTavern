@@ -8,7 +8,7 @@ import {
     animation_easing,
 } from '../../../script.js';
 import { groups, selected_group } from '../../group-chats.js';
-import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename } from '../../utils.js';
+import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension } from '../../utils.js';
 import { loadMovingUIState } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
@@ -63,10 +63,10 @@ mutationObserver.observe(document.body, {
 });
 
 const SORT = Object.freeze({
-    NAME_ASC: { value: 'nameAsc', field: 'name', order: 'asc', label: t`Sort By: Name (A-Z)` },
-    NAME_DESC: { value: 'nameDesc', field: 'name', order: 'desc', label: t`Sort By: Name (Z-A)` },
-    DATE_ASC: { value: 'dateAsc', field: 'date', order: 'asc', label: t`Sort By: Date (Oldest First)` },
-    DATE_DESC: { value: 'dateDesc', field: 'date', order: 'desc', label: t`Sort By: Date (Newest First)` },
+    NAME_ASC: { value: 'nameAsc', field: 'name', order: 'asc', label: t`Name (A-Z)` },
+    NAME_DESC: { value: 'nameDesc', field: 'name', order: 'desc', label: t`Name (Z-A)` },
+    DATE_DESC: { value: 'dateDesc', field: 'date', order: 'desc', label: t`Newest` },
+    DATE_ASC: { value: 'dateAsc', field: 'date', order: 'asc', label: t`Oldest` },
 });
 
 const defaultSettings = Object.freeze({
@@ -324,7 +324,6 @@ async function showCharGallery(deleteModeState = false) {
         await delay(100);
         await initGallery(items, url);
     } catch (err) {
-        console.trace();
         console.error(err);
     }
 }
@@ -341,27 +340,12 @@ async function showCharGallery(deleteModeState = false) {
 async function uploadFile(file, url) {
     try {
         // Convert the file to a base64 string
-        const base64Data = await getBase64Async(file);
+        const fileBase64 = await getBase64Async(file);
+        const base64Data = fileBase64.split(',')[1];
+        const extension = getFileExtension(file);
+        const path = await saveBase64AsFile(base64Data, url, '', extension);
 
-        // Create the payload
-        const payload = {
-            image: base64Data,
-            ch_name: url,
-        };
-
-        const response = await fetch('/api/images/upload', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(payload),
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-
-        const result = await response.json();
-
-        toastr.success(t`File uploaded successfully. Saved at: ${result.path}`);
+        toastr.success(t`File uploaded successfully. Saved at: ${path}`);
     } catch (error) {
         console.error('There was an issue uploading the file:', error);
 
@@ -392,6 +376,11 @@ async function makeMovable(url) {
     const titleText = document.createElement('span');
     titleText.textContent = t`Image Gallery`;
     dragTitle.append(titleText);
+
+    // Create a container for the controls
+    const controlsContainer = document.createElement('div');
+    controlsContainer.classList.add('flex-container', 'alignItemsCenter');
+
     const sortSelect = document.createElement('select');
     sortSelect.classList.add('gallery-sort-select');
 
@@ -410,7 +399,42 @@ async function makeMovable(url) {
     });
 
     sortSelect.value = getSortOrder();
-    dragTitle.append(sortSelect);
+    controlsContainer.appendChild(sortSelect);
+
+    // Create the "Add Image" button
+    const addImageButton = document.createElement('div');
+    addImageButton.classList.add('menu_button', 'menu_button_icon', 'interactable');
+    addImageButton.title = 'Add Image';
+    addImageButton.innerHTML = '<i class="fa-solid fa-plus fa-fw"></i><div>Add Image</div>';
+
+    // Create a hidden file input
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.multiple = true;
+    fileInput.style.display = 'none';
+
+    // Trigger file input when the button is clicked
+    addImageButton.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    // Handle file selection
+    fileInput.addEventListener('change', async () => {
+        const files = fileInput.files;
+        if (files.length > 0) {
+            for (const file of files) {
+                await uploadFile(file, url);
+            }
+            // Refresh the gallery
+            closeButton.trigger('click');
+            await showCharGallery();
+        }
+    });
+
+    controlsContainer.appendChild(addImageButton);
+    dragTitle.append(controlsContainer);
+    newElement.append(fileInput); // Append hidden file input to the main element
 
     // add no-scrollbar class to this element
     newElement.addClass('no-scrollbar');
@@ -620,6 +644,9 @@ function makeDragImg(id, url) {
         }
         draggableElem.id = uniqueId;
 
+        // Add the galleryImageDraggable to have unique class
+        draggableElem.classList.add('galleryImageDraggable');
+
         // Ensure that the newly added element is displayed as block
         draggableElem.style.display = 'block';
         //and has no padding unlike other non-zoomed-avatar draggables
@@ -749,7 +776,6 @@ async function listGalleryCommand(args) {
         return JSON.stringify(items.map(it => it.src));
 
     } catch (err) {
-        console.trace();
         console.error(err);
     }
     return JSON.stringify([]);
