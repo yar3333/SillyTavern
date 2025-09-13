@@ -342,7 +342,6 @@ toastr.options = {
     },
 };
 
-    MESSAGE_EDIT_BEGIN: 'message_edit_begin',
 export const characterGroupOverlay = new BulkEditOverlay();
 
 // Markdown converter
