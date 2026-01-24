@@ -19,17 +19,18 @@ import {
     animation_easing,
 } from '../../../script.js';
 import { is_group_generating, selected_group } from '../../group-chats.js';
-import { loadMovingUIState } from '../../power-user.js';
+import { loadMovingUIState, power_user } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
 import { debounce_timeout } from '../../constants.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
-import { MacrosParser } from '../../macros.js';
+import { macros, MacroCategory } from '../../macros/macro-system.js';
 import { countWebLlmTokens, generateWebLlmChatPrompt, getWebLlmContextSize, isWebLlmSupported } from '../shared.js';
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { removeReasoningFromString } from '../../reasoning.js';
+import { MacrosParser } from '/scripts/macros.js';
 export { MODULE_NAME };
 
 const MODULE_NAME = '1_memory';
@@ -348,6 +349,11 @@ function onMaxMessagesPerRequestInput() {
     saveSettingsDebounced();
 }
 
+/**
+ * Get the latest memory summary from the chat.
+ * @param {ChatMessage[]} chat Chat messages
+ * @returns {string} Latest memory summary or empty string
+ */
 function getLatestMemoryFromChat(chat) {
     if (!Array.isArray(chat) || !chat.length) {
         return '';
@@ -364,6 +370,11 @@ function getLatestMemoryFromChat(chat) {
     return '';
 }
 
+/**
+ * Get the index of the latest memory summary from the chat.
+ * @param {ChatMessage[]} chat Chat messages
+ * @returns {number} Index of the latest memory summary or -1 if not found
+ */
 function getIndexOfLatestChatSummary(chat) {
     if (!Array.isArray(chat) || !chat.length) {
         return -1;
@@ -993,7 +1004,7 @@ function doPopout(e) {
         originalElement.empty();
         originalElement.html('<div class="flex-container alignitemscenter justifyCenter wide100p"><small>Currently popped out</small></div>');
         newElement.append(controlBarHtml).append(originalHTMLClone);
-        $('body').append(newElement);
+        $('#movingDivs').append(newElement);
         newElement.transition({ opacity: 1, duration: animation_duration, easing: animation_easing });
         $('#summaryExtensionDrawerContents').addClass('scrollableInnerFull');
         setMemoryContext(prevSummaryBoxContents, false); //paste prev summary box contents into popout box
@@ -1094,5 +1105,16 @@ jQuery(async function () {
         returns: ARGUMENT_TYPE.STRING,
     }));
 
-    MacrosParser.registerMacro('summary', () => getLatestMemoryFromChat(getContext().chat));
+    if (power_user.experimental_macro_engine) {
+        macros.register('summary', {
+            category: MacroCategory.CHAT,
+            description: 'Returns the latest memory/summary from the current chat.',
+            handler: () => getLatestMemoryFromChat(getContext().chat),
+        });
+    } else {
+        // TODO: Remove this when the experimental macro engine is replacing the old macro engine
+        MacrosParser.registerMacro('summary',
+            () => getLatestMemoryFromChat(getContext().chat),
+            'Returns the latest memory/summary from the current chat.');
+    }
 });

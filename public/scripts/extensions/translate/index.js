@@ -213,7 +213,7 @@ async function translateImpersonate() {
         return;
     }
 
-    const textToTranslate = substituteParams(message.mes, context.name1, message.name);
+    const textToTranslate = substituteParams(message.mes, { name2Override: message.name });
     if (!isReverse) {
         message.extra.display_text = await translate(textToTranslate);
     }
@@ -246,7 +246,7 @@ async function translateIncomingMessageReasoning(messageId) {
         return false;
     }
 
-    const textToTranslate = substituteParams(message.extra.reasoning, context.name1, message.name);
+    const textToTranslate = substituteParams(message.extra.reasoning, { name2Override: message.name });
     const translation = await translate(textToTranslate, extension_settings.translate.target_language);
     message.extra.reasoning_display_text = translation;
 

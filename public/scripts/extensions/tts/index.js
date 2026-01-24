@@ -33,6 +33,8 @@ import { KokoroTtsProvider } from './kokoro.js';
 import { TtsWebuiProvider } from './tts-webui.js';
 import { PollinationsTtsProvider } from './pollinations.js';
 import { MiniMaxTtsProvider } from './minimax.js';
+import { ElectronHubTtsProvider } from './electronhub.js';
+import { ChutesTtsProvider } from './chutes.js';
 
 const UPDATE_INTERVAL = 1000;
 const wrapper = new ModuleWorkerWrapper(moduleWorker);
@@ -119,10 +121,12 @@ const ttsProviders = {
     AllTalk: AllTalkTtsProvider,
     Azure: AzureTtsProvider,
     Chatterbox: ChatterboxTtsProvider,
+    Chutes: ChutesTtsProvider,
     Coqui: CoquiTtsProvider,
     'CosyVoice (Unofficial)': CosyVoiceProvider,
     Edge: EdgeTtsProvider,
     ElevenLabs: ElevenLabsTtsProvider,
+    'Electron Hub': ElectronHubTtsProvider,
     'Google Translate': GoogleTranslateTtsProvider,
     'Google Gemini TTS': GoogleNativeTtsProvider,
     GSVI: GSVITtsProvider,
@@ -237,9 +241,7 @@ function isTtsProcessing() {
 
 /**
  * Splits a message into lines and adds each non-empty line to the TTS job queue.
- * @param {Object} message - The message object to be processed.
- * @param {string} message.mes - The text of the message to be split into lines.
- * @param {string} message.name - The name associated with the message.
+ * @param {ChatMessage} message - The message object to be processed.
  * @returns {void}
  */
 function processAndQueueTtsMessage(message) {
